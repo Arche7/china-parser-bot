@@ -141,6 +141,8 @@ MIGRATIONS = [
     ("users", "home_msg_id", "INTEGER"),                      # id сообщения «пульта»
     ("watches", "paused", "INTEGER NOT NULL DEFAULT 0"),
     ("watches", "found", "INTEGER NOT NULL DEFAULT 0"),       # сколько прислали по бренду
+    ("feed", "seen", "INTEGER NOT NULL DEFAULT 0"),           # 1 = уже посмотрел (в чате или приложении)
+    ("feed", "hidden", "INTEGER NOT NULL DEFAULT 0"),         # 1 = скрыл «неинтересно»
 ]
 
 # Настройки пользователя по умолчанию
@@ -670,8 +672,17 @@ class Database:
         await self.conn.commit()
 
     @staticmethod
-    def _feed_where(brand: str | None, grp: str | None, since: int | None) -> tuple[str, list]:
-        sql, args = "", []
+    def _feed_where(brand: str | None, grp: str | None, since: int | None,
+                    view: str = "all") -> tuple[str, list]:
+        """
+        Условие для ленты. Всегда прячем скрытые вручную и проданные/снятые вещи.
+        view: all — всё, new — только непросмотренные.
+        """
+        sql = (" AND f.hidden = 0 AND (json_extract(l.data, '$.status') IS NULL"
+               " OR json_extract(l.data, '$.status') = '')")
+        args: list = []
+        if view == "new":
+            sql += " AND f.seen = 0"
         if brand:
             sql += " AND f.keyword = ?"
             args.append(brand)
@@ -683,16 +694,19 @@ class Database:
             args.append(since)
         return sql, args
 
+    _FEED_FROM = "FROM feed f JOIN listings l ON l.source = f.source AND l.item_id = f.item_id"
+
     async def feed_page(self, user_id: int, brand: str | None = None, grp: str | None = None,
-                        since: int | None = None, limit: int = 30, offset: int = 0) -> list[dict]:
+                        since: int | None = None, limit: int = 30, offset: int = 0,
+                        view: str = "all") -> list[dict]:
         """Лента пользователя (новые сверху) вместе с данными объявлений."""
-        where, args = self._feed_where(brand, grp, since)
+        where, args = self._feed_where(brand, grp, since, view)
         cur = await self.conn.execute(
             f"""
-            SELECT f.source, f.item_id, f.keyword, f.grp, f.created_at, l.data,
+            SELECT f.source, f.item_id, f.keyword, f.grp, f.created_at, f.seen, l.data,
                    EXISTS(SELECT 1 FROM favorites v WHERE v.user_id = f.user_id
                           AND v.source = f.source AND v.item_id = f.item_id) AS fav
-            FROM feed f JOIN listings l ON l.source = f.source AND l.item_id = f.item_id
+            {self._FEED_FROM}
             WHERE f.user_id = ?{where}
             ORDER BY f.created_at DESC, f.rowid DESC LIMIT ? OFFSET ?
             """,
@@ -702,26 +716,50 @@ class Database:
         for r in await cur.fetchall():
             rows.append({"source": r["source"], "item_id": r["item_id"], "keyword": r["keyword"],
                          "grp": r["grp"], "found_at": r["created_at"], "fav": bool(r["fav"]),
-                         "data": json.loads(r["data"])})
+                         "seen": bool(r["seen"]), "data": json.loads(r["data"])})
         return rows
 
     async def feed_count(self, user_id: int, brand: str | None = None, grp: str | None = None,
-                         since: int | None = None) -> int:
-        where, args = self._feed_where(brand, grp, since)
-        cur = await self.conn.execute(f"SELECT COUNT(*) FROM feed f WHERE f.user_id = ?{where}", (user_id, *args))
+                         since: int | None = None, view: str = "all") -> int:
+        where, args = self._feed_where(brand, grp, since, view)
+        cur = await self.conn.execute(f"SELECT COUNT(*) {self._FEED_FROM} WHERE f.user_id = ?{where}",
+                                      (user_id, *args))
         return (await cur.fetchone())[0]
 
-    async def feed_facets(self, user_id: int, since: int | None = None) -> dict:
+    async def feed_facets(self, user_id: int, since: int | None = None, view: str = "all") -> dict:
         """Сколько объявлений по брендам и разделам — для фильтров."""
-        where, args = self._feed_where(None, None, since)
+        where, args = self._feed_where(None, None, since, view)
         result = {"brands": {}, "groups": {}}
         for column, key in (("keyword", "brands"), ("grp", "groups")):
             cur = await self.conn.execute(
-                f"SELECT f.{column}, COUNT(*) FROM feed f WHERE f.user_id = ?{where} GROUP BY f.{column} ORDER BY 2 DESC",
+                f"SELECT f.{column}, COUNT(*) {self._FEED_FROM} WHERE f.user_id = ?{where}"
+                f" GROUP BY f.{column} ORDER BY 2 DESC",
                 (user_id, *args),
             )
             result[key] = {row[0]: row[1] for row in await cur.fetchall()}
         return result
+
+    async def mark_feed_seen(self, user_id: int, items: list[tuple[str, str]]) -> None:
+        """Отметить объявления просмотренными (листал в чате или видел в приложении)."""
+        if not items:
+            return
+        await self.conn.executemany(
+            "UPDATE feed SET seen = 1 WHERE user_id = ? AND source = ? AND item_id = ?",
+            [(user_id, s, str(i)) for s, i in items],
+        )
+        await self.conn.commit()
+
+    async def mark_all_seen(self, user_id: int) -> None:
+        await self.conn.execute("UPDATE feed SET seen = 1 WHERE user_id = ? AND seen = 0", (user_id,))
+        await self.conn.commit()
+
+    async def set_feed_hidden(self, user_id: int, source: str, item_id: str, hidden: bool) -> bool:
+        cur = await self.conn.execute(
+            "UPDATE feed SET hidden = ?, seen = 1 WHERE user_id = ? AND source = ? AND item_id = ?",
+            (1 if hidden else 0, user_id, source, str(item_id)),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
 
     # ---------------- Оплаты ----------------
 

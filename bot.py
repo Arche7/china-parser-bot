@@ -41,6 +41,7 @@ async def set_profile(bot: Bot) -> None:
     """Меню команд и описание бота (то, что видно до нажатия «Старт»)."""
     await bot.set_my_commands([
         BotCommand(command="start", description="Главная"),
+        BotCommand(command="feed", description="Лента находок"),
         BotCommand(command="add", description="Добавить бренд"),
         BotCommand(command="list", description="Мои бренды"),
         BotCommand(command="help", description="Как это работает"),

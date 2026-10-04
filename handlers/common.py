@@ -16,9 +16,8 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 
@@ -31,20 +30,18 @@ from db import Database
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
 
-# Нижняя клавиатура — всегда под рукой, даже если главная уехала вверх
+# Нижней клавиатуры (Главная · Лента · Бренды) больше нет: она закрывала
+# объявления при листании. Всё есть в кнопке меню HUNTR, в /start и в «/».
+# REPLY_KB теперь УБИРАЕТ старую клавиатуру у тех, у кого она осталась.
 BTN_HOME = "Главная"
 BTN_FEED = "Лента"
 BTN_BRANDS = "Бренды"
 BTN_FAVS = "Избранное"
-# Старые подписи кнопок — чтобы клавиатура у старых пользователей тоже работала
+# Старые подписи кнопок — если у кого-то осталась старая клавиатура, она всё ещё работает
 OLD_HOME = {"🏠 Пульт", BTN_HOME}
 OLD_BRANDS = {"🎯 Бренды", BTN_BRANDS}
 OLD_FAVS = {"⭐ Избранное", BTN_FAVS}
-REPLY_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_FEED), KeyboardButton(text=BTN_BRANDS)]],
-    resize_keyboard=True,
-    is_persistent=True,
-)
+REPLY_KB = ReplyKeyboardRemove()
 
 _background: set[asyncio.Task] = set()
 
@@ -102,10 +99,11 @@ def support_url() -> str | None:
     return f"https://t.me/{config.SUPPORT_USERNAME}" if config.SUPPORT_USERNAME else None
 
 
-def webapp_button() -> InlineKeyboardButton | None:
+def webapp_button(text: str | None = None) -> InlineKeyboardButton | None:
     if not config.WEBAPP_URL:
         return None
-    return InlineKeyboardButton(text=f"📱 Открыть {config.BRAND_NAME}", web_app=WebAppInfo(url=config.WEBAPP_URL))
+    return InlineKeyboardButton(text=f"📱 {text or 'Открыть ' + config.BRAND_NAME}",
+                                web_app=WebAppInfo(url=config.WEBAPP_URL))
 
 
 def is_admin(user_id: int) -> bool:

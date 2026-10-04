@@ -16,6 +16,7 @@ Goofish). По умолчанию — ahaham_bytiz/avito-scraper: на моме�
 """
 
 import logging
+import re
 import statistics
 from urllib.parse import quote_plus
 
@@ -35,7 +36,28 @@ def search_query(keyword: str, category: str | None) -> str:
 
 
 def search_url(query: str) -> str:
-    return f"https://www.avito.ru/all?q={quote_plus(query)}"
+    # /rossiya — поиск по всей России (так ссылки выглядят на самом Авито)
+    return f"https://www.avito.ru/rossiya?q={quote_plus(query)}"
+
+
+def _price_of(item: dict) -> float | None:
+    """Цена объявления: число в price, иначе цифры из priceText ('45 000 ₽')."""
+    for key in ("price", "priceValue", "priceRub"):
+        value = item.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("amount")
+        if isinstance(value, str):
+            digits = re.sub(r"[^0-9]", "", value)
+            if digits:
+                return float(digits)
+    text = item.get("priceText") or item.get("price_text")
+    if isinstance(text, str):
+        digits = re.sub(r"[^0-9]", "", text)
+        if digits:
+            return float(digits)
+    return None
 
 
 def _relevant(keyword: str, title: str) -> bool:
@@ -88,47 +110,71 @@ class AvitoPrices:
             return base
 
         cached = await self.db.get_avito(query.lower(), config.AVITO_CACHE_HOURS * 3600)
-        if cached is not None:
+        if cached is not None and cached.get("median"):
             return {**base, **cached}
 
+        items: list = []
+        # 1-я попытка — жилые прокси РФ (так советует автор актора),
+        # 2-я — прокси по умолчанию, если первая ничего не принесла
+        for proxy in ({"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "RU"},
+                      {"useApifyProxy": True, "apifyProxyCountry": "RU"}):
+            items = await self._run(base["url"], proxy, query)
+            if items:
+                break
+
+        relevant = []
+        for item in items:
+            price = _price_of(item)
+            title = str(item.get("title") or "")
+            if price is not None and price >= 300 and _relevant(keyword, title):
+                relevant.append((price, title, item.get("url")))
+        prices = [p for p, _, _ in relevant]
+        stats = _stats(prices) or {"count": len(prices)}
+        if stats.get("median"):
+            # 3 похожих объявления с ценой ближе всего к медиане — чтобы можно было глянуть глазами
+            med = stats["median"]
+            samples = sorted(relevant, key=lambda r: abs(r[0] - med))[:3]
+            stats["samples"] = [{"title": t[:80], "price": p, "url": u} for p, t, u in samples if u]
+            await self.db.save_avito(query.lower(), stats)   # пустой результат не запоминаем
+        log.info("Авито: «%s» — объявлений %d, подходящих цен %d%s", query, len(items), len(prices),
+                 f" (пример полей: {sorted(items[0].keys())[:12]})" if items and not prices else "")
+        return {**base, **stats}
+
+    async def _run(self, url: str, proxy: dict, query: str) -> list:
         try:
             run = await self.client.actor(config.AVITO_ACTOR_ID).call(
                 run_input={
-                    "startUrls": [{"url": base["url"]}],
+                    "startUrls": [{"url": url}],
                     "maxItems": config.AVITO_MAX_ITEMS,
                     "maxPagesPerUrl": 1,
                     "scrapeDetails": False,
-                    "proxyConfiguration": {
-                        "useApifyProxy": True,
-                        "apifyProxyGroups": ["RESIDENTIAL"],
-                        "apifyProxyCountry": "RU",
-                    },
+                    "language": "ru",
+                    "proxyConfiguration": proxy,
                 },
                 timeout_secs=180,
                 logger=None,  # не дублировать логи актора в логи бота
             )
-            dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "default_dataset_id", None)
-            if not dataset_id:
-                return base
-            page = await self.client.dataset(dataset_id).list_items(clean=True)
-            items = page.items if hasattr(page, "items") else page.get("items", [])
         except Exception as e:
             log.warning("Авито: ошибка для «%s»: %s", query, e)
-            return base
-
-        prices = []
-        for item in items:
-            try:
-                price = float(item.get("price") or 0)
-            except (TypeError, ValueError):
-                continue
-            title = str(item.get("title") or "")
-            if price >= 300 and _relevant(keyword, title):
-                prices.append(price)
-        stats = _stats(prices) or {"count": len(prices)}
-        await self.db.save_avito(query.lower(), stats)
-        log.info("Авито: «%s» — %d подходящих цен", query, len(prices))
-        return {**base, **stats}
+            return []
+        if not run:
+            log.warning("Авито: актор не вернул запуск для «%s»", query)
+            return []
+        status = run.get("status") if isinstance(run, dict) else getattr(run, "status", None)
+        dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "default_dataset_id", None)
+        if not dataset_id:
+            log.warning("Авито: у запуска нет датасета (статус %s) для «%s»", status, query)
+            return []
+        try:
+            page = await self.client.dataset(dataset_id).list_items(clean=True)
+        except Exception as e:
+            log.warning("Авито: не прочитал результаты «%s»: %s", query, e)
+            return []
+        items = page.items if hasattr(page, "items") else page.get("items", [])
+        if not items:
+            log.warning("Авито: актор отработал со статусом %s, но объявлений нет («%s», прокси %s)",
+                        status, query, proxy.get("apifyProxyGroups") or "по умолчанию")
+        return [i for i in items if isinstance(i, dict)]
 
     async def close(self) -> None:
         return None

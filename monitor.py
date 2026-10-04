@@ -405,13 +405,26 @@ class Monitor:
             pending = await self.db.pending_feed(user_id)
             if not pending:
                 continue
-            ok = await self._send_digest(user_id, pending, settings)
-            if ok:
+            # Прошлую сводку, которую так и не открыли, убираем — в чате всегда одна свежая.
+            # В новую входят и старые непросмотренные находки, так что ничего не теряется.
+            old_msg = settings.get("digest_msg")
+            if old_msg:
+                try:
+                    await self.bot.delete_message(user_id, old_msg)
+                except Exception:
+                    pass
+                unseen = await self.db.feed_page(user_id, since=int(now) - config.FEED_DAYS * 86400,
+                                                 view="new", limit=200)
+                have = {(r["source"], r["item_id"]) for r in pending}
+                pending = list(pending) + [r for r in unseen if (r["source"], r["item_id"]) not in have]
+            sent_id = await self._send_digest(user_id, pending, settings)
+            if sent_id:
                 await self.db.mark_notified(user_id)
-                await self.db.update_settings(user_id, last_digest=int(now))
+                await self.db.update_settings(user_id, last_digest=int(now), digest_msg=sent_id)
                 self.forget_settings(user_id)
 
-    async def _send_digest(self, user_id: int, pending: list, settings: dict) -> bool:
+    async def _send_digest(self, user_id: int, pending: list, settings: dict) -> int | None:
+        """Отправляет сводку. Возвращает id сообщения (None — не дошло)."""
         from cards import digest_caption, digest_keyboard  # здесь, чтобы не было циклического импорта
         top = None
         for row in pending:
@@ -425,21 +438,22 @@ class Monitor:
         try:
             if top:
                 try:
-                    await self.bot.send_photo(user_id, photo=top["image"], caption=caption,
-                                              reply_markup=markup, disable_notification=silent)
+                    sent = await self.bot.send_photo(user_id, photo=top["image"], caption=caption,
+                                                     reply_markup=markup, disable_notification=silent)
                 except TelegramBadRequest:
-                    await self.bot.send_message(user_id, caption, reply_markup=markup, disable_notification=silent)
+                    sent = await self.bot.send_message(user_id, caption, reply_markup=markup,
+                                                       disable_notification=silent)
             else:
-                await self.bot.send_message(user_id, caption, reply_markup=markup, disable_notification=silent)
+                sent = await self.bot.send_message(user_id, caption, reply_markup=markup, disable_notification=silent)
             self.messages_sent += 1
-            return True
+            return sent.message_id
         except TelegramForbiddenError:
             await self.db.set_paused(user_id, True)
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after + 1)
         except Exception as e:
             log.warning("Не удалось отправить сводку %s: %s", user_id, e)
-        return False
+        return None
 
     async def send_listing(
         self,

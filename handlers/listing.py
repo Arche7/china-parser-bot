@@ -9,7 +9,7 @@ import html
 import logging
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
 import ai
 import brands
@@ -108,13 +108,13 @@ async def cb_profit(callback: CallbackQuery, db: Database, avito: AvitoPrices) -
         return
     settings = await db.get_settings(user_id)
     text = cards.profit_text(r["data"], r["keyword"], settings, r["market"])
-    if r["market"] and r["market"].get("median") is not None:
+    if r["market"] and r["market"].get("median") is not None and r["left"] < 1000:
         text += f"\n<i>Осталось сравнений в этом месяце: {r['left']}</i>"
     rows = []
     if r["market"]:
         rows.append([url_btn("Открыть поиск на Авито ↗", r["market"]["url"])])
     rows.append([btn("⚙️ Доставка и комиссия", "st:open")])
-    await wait.edit_text(text, reply_markup=kb(*rows))
+    await wait.edit_text(text, reply_markup=kb(*rows), link_preview_options=LinkPreviewOptions(is_disabled=True))
 
 
 # ---------------------------------------------------------------- легит-чек объявления
@@ -152,6 +152,8 @@ async def cb_legit(callback: CallbackQuery, db: Database, sources: dict) -> None
         return
     text = cards.legit_text(brands.display_name(r["keyword"]), r["result"], r["left"],
                             seller=r["seller"], photos=r["photos"])
+    if r["data"].get("status"):
+        text = "⚠️ <b>Похоже, вещь уже продана или снята с продажи.</b>\n\n" + text
     if r["cached"]:
         text += "\n<i>Это объявление уже проверяли — показываю результат, лимит не тратится.</i>"
     await wait.edit_text(text[:4000], reply_markup=kb([btn("💬 Как спросить продавца по-китайски",

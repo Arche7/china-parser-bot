@@ -24,57 +24,64 @@ BANNER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 
 
 async def home_screen(db: Database, user_id: int, first_name: str | None = None):
+    """Главная: 3 короткие строки и 5 кнопок. Остальное — в «Ещё»."""
     user = await db.get_user(user_id)
     plan = await user_plan(db, user_id)
     watches = await db.list_watches(user_id)
-    own = await count_own(db, user_id)
     has_access = await db.has_access(user_id)
     settings = await db.get_settings(user_id)
-    week_new = await db.feed_count(user_id, since=now() - 7 * 86400)
-    day_new = await db.feed_count(user_id, since=now() - 86400)
+    since = now() - config.FEED_DAYS * 86400
+    new_count = await db.feed_count(user_id, since=since, view="new")
     paused = bool(user and user["paused"])
 
-    lines = [f"<b>{esc(config.BRAND_NAME)}</b>"]
     if is_admin(user_id):
-        lines.append("<i>Админ · без ограничений</i>")
+        status = "админ"
     elif has_access:
-        lines.append(f"<i>{esc(plan.title)} · до {human_date(user['sub_until'])}</i>")
+        status = f"{esc(plan.title)} до {human_date(user['sub_until'])}"
     else:
-        lines.append("<i>Доступа нет — радар выключен</i>")
-    lines.append("")
+        status = "доступа нет"
+    lines = [f"<b>{esc(config.BRAND_NAME)}</b> · <i>{status}</i>"]
     if watches:
         active = [w for w in watches if not w["paused"]]
         intervals = sorted({watch_interval({"is_admin": is_admin(user_id), "plan": plan.code,
                                              "keyword": w["keyword"]}) for w in active}) or [plan.interval_min]
         every = f"{intervals[0]}" if len(intervals) == 1 else f"{intervals[0]}–{intervals[-1]}"
-        lines.append(f"🎯 {len(watches)} {plural(len(watches), 'бренд', 'бренда', 'брендов')} · проверка каждые {every} мин")
+        lines.append(f"🎯 {len(watches)} {plural(len(watches), 'бренд', 'бренда', 'брендов')} · каждые {every} мин")
     else:
         lines.append("🎯 Брендов пока нет — добавь первый")
-    lines.append(f"🆕 {day_new} за сутки · {week_new} в ленте")
     mode = settings.get("notify", "digest")
     if paused:
-        lines.append("⏸ Пауза — ничего не присылаю")
+        notif = "⏸ пауза"
     elif mode == "digest":
-        lines.append(f"🔔 Сводка раз в {settings.get('every', 30)} мин")
+        notif = f"сводка раз в {settings.get('every', 30)} мин"
     elif mode == "instant":
-        lines.append("🔔 Каждая находка сразу")
+        notif = "каждая сразу"
     else:
-        lines.append("🔕 Без уведомлений — всё в ленте")
-    lines.append(f"\n<i>1 ¥ = {rates.cny_rub():.2f} ₽ · {rates.source_label()}</i>")
+        notif = "без уведомлений"
+    lines.append(f"🆕 {new_count} {plural(new_count, 'новая', 'новые', 'новых')} · {notif}")
 
     rows = []
     if webapp_button():
         rows.append([webapp_button()])
     rows += [
-        [btn(f"📰 Лента · {week_new}" if week_new else "📰 Лента", "fd:v:all:-:0")],
-        [btn("🎯 Бренды", "b:list"), btn("⭐ Избранное", "f:list")],
-        [btn("🔔 Уведомления", "nt:open"), btn("⚙️ Настройки", "st:open")],
-        [btn("💎 Тариф", "pl:open"), btn("❓ Помощь", "h:help")],
+        [btn(f"📰 Лента · {new_count}" if new_count else "📰 Лента", "fd:v:all:-:0"), btn("🎯 Бренды", "b:list")],
+        [btn("⭐ Избранное", "f:list"), btn("⋯ Ещё", "h:more")],
     ]
     if not has_access:
         rows = [[btn("🎁 Попробовать бесплатно", "trial")] if user and not user["trial_used"] and config.TRIAL_DAYS
                 else [btn("💎 Выбрать тариф", "pl:open")]] + rows
     return "\n".join(lines), kb(*rows)
+
+
+@router.callback_query(F.data == "h:more")
+async def cb_more(callback: CallbackQuery) -> None:
+    text = (f"⋯ <b>Ещё</b>\n\n<i>Курс: 1 ¥ = {rates.cny_rub():.2f} ₽ · {rates.source_label()}</i>")
+    await show(callback, text, kb(
+        [btn("🔔 Уведомления", "nt:open"), btn("⚙️ Настройки", "st:open")],
+        [btn("💎 Тариф", "pl:open"), btn("❓ Помощь", "h:help")],
+        back_home(),
+    ))
+    await safe_answer(callback)
 
 
 _banner_id: str | None = None
@@ -112,8 +119,13 @@ async def msg_home(message: Message, db: Database, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "h:home")
 async def cb_home(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
-    global _banner_id
     await state.clear()
+    await restore_home(callback, db)
+
+
+async def restore_home(callback: CallbackQuery, db: Database) -> None:
+    """Вернуть в это сообщение главную (картинку HUNTR с подписью и кнопками)."""
+    global _banner_id
     text, markup = await home_screen(db, callback.from_user.id)
     msg = callback.message
     await safe_answer(callback)

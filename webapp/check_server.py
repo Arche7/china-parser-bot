@@ -149,6 +149,28 @@ async def main() -> None:
         me = await call("GET", "/api/me", user)
         assert me["counts"]["feed_new"] == 3, me["counts"]
 
+        # --- просмотрено / скрыто / продано
+        fn = await call("GET", "/api/feed?view=new", user)
+        assert fn["total"] == 3 and fn["new_total"] == 3 and all(i["seen"] is False for i in fn["items"]), fn
+        r = await call("POST", "/api/seen", user, json={"items": [{"source": "goofish", "item_id": "g1"}]})
+        assert r == {"ok": True, "new_total": 2}, r
+        assert {i["item_id"] for i in (await call("GET", "/api/feed?view=new", user))["items"]} == {"g2", "p1"}
+        assert next(i for i in (await call("GET", "/api/feed", user))["items"] if i["item_id"] == "g1")["seen"] is True
+        await call("POST", "/api/seen", user, json={"items": "x"}, status=400)
+        r = await call("POST", "/api/hide", user, json={"source": "goofish", "item_id": "p1", "hidden": True})
+        assert r["ok"] and r["new_total"] == 1, r
+        assert (await call("GET", "/api/feed", user))["total"] == 2
+        await call("POST", "/api/hide", user, json={"source": "goofish", "item_id": "nope"}, status=404)
+        await call("POST", "/api/hide", user, json={"source": "goofish", "item_id": "p1", "hidden": False})
+        assert (await call("GET", "/api/feed", user))["total"] == 3
+        found = await db.get_listing("goofish", "p1")
+        await db.save_listing("goofish", "p1", found[0], {**found[1], "status": "sold"})
+        assert (await call("GET", "/api/feed", user))["total"] == 2   # проданное уходит из ленты
+        await db.save_listing("goofish", "p1", found[0], found[1])
+        r = await call("POST", "/api/seen", user, json={"all": True})
+        assert r["new_total"] == 0, r
+        await db.conn.execute("UPDATE feed SET seen = 0"); await db.conn.commit()
+
         # --- избранное
         assert (await call("POST", "/api/fav", user, json={"source": "goofish", "item_id": "g2"})) == {"fav": True}
         favs = await call("GET", "/api/favorites", user)

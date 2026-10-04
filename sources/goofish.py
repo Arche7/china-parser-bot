@@ -43,6 +43,27 @@ def _parse_price(value) -> float | None:
     return float(match.group(0)) if match else None
 
 
+
+# Пометки «продано» / «снято с продажи» в карточке Goofish
+_SOLD_MARKS = ("已售出", "已卖出", "卖掉了", "已售", "sold")
+_GONE_MARKS = ("已下架", "下架", "已删除", "offline", "removed", "deleted", "invalid")
+
+
+def item_status(raw: dict) -> str | None:
+    """'sold' — продано, 'gone' — снято/удалено, None — в продаже (или неизвестно)."""
+    for key in ("status", "itemStatus", "item_status", "state", "saleStatus", "tradeStatus"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).lower()
+        if any(m in text for m in _SOLD_MARKS):
+            return "sold"
+        if any(m in text for m in _GONE_MARKS):
+            return "gone"
+    if raw.get("isSold") is True or raw.get("sold") is True:
+        return "sold"
+    return None
+
 class GoofishSource(Source):
     name = "goofish"
     title = "Goofish (闲鱼)"
@@ -127,7 +148,10 @@ class GoofishSource(Source):
                 "apifyProxyCountry": self.proxy_country,
             },
         }
-        # Актор принимает ссылки или числовые id; пробуем оба формата
+        # Актор принимает ссылки или числовые id; пробуем оба формата.
+        # Если актор отработал без ошибок, но карточку не вернул ни в одном
+        # формате — скорее всего объявление удалено.
+        empty_runs = 0
         for start in ([{"url": url}], [url], [str(item_id)]):
             try:
                 run = await self.client.actor(self.actor_id).call(
@@ -142,6 +166,7 @@ class GoofishSource(Source):
                 log.warning("Goofish: не удалось получить карточку %s (%s): %s", item_id, type(start[0]).__name__, e)
                 continue
             if not items:
+                empty_runs += 1
                 continue
             raw = items[0]
             images = raw.get("images") or []
@@ -156,7 +181,10 @@ class GoofishSource(Source):
                 "seller": {k: seller.get(k) for k in ("name", "zhimaCredit", "zhimaAuth", "totalSold",
                                                      "goodReviewRate", "registeredDays", "replyRate24h", "lastActive")},
                 "stats": {k: stats.get(k) for k in ("views", "wants", "favorites")},
+                "status": item_status(raw),
             }
+        if empty_runs == 3:
+            return {"status": "gone"}
         return None
 
     def _to_listing(self, raw: dict) -> Listing | None:

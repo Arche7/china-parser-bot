@@ -130,14 +130,14 @@ def build_card(data: dict, keyword: str, settings: dict, header: str = "🆕") -
 def card_keyboard(source: str, item_id: str, url: str, is_fav: bool = False) -> InlineKeyboardMarkup:
     ref = f"{source}:{item_id}"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть на Goofish ↗", url=url)],
         [
-            InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
+            InlineKeyboardButton(text="🛡 Легит", callback_data=f"l:lg:{ref}"),
             InlineKeyboardButton(text="📊 Выгода", callback_data=f"l:pr:{ref}"),
+            InlineKeyboardButton(text="★" if is_fav else "☆", callback_data=f"l:fv:{ref}"),
         ],
         [
-            InlineKeyboardButton(text="★ В избранном" if is_fav else "☆ В избранное", callback_data=f"l:fv:{ref}"),
-            InlineKeyboardButton(text="💬 Фразы продавцу", callback_data=f"l:ph:{ref}"),
+            InlineKeyboardButton(text="Goofish ↗", url=url),
+            InlineKeyboardButton(text="💬 Продавцу", callback_data=f"l:ph:{ref}"),
         ],
     ])
 
@@ -177,13 +177,17 @@ def profit_text(data: dict, keyword: str, settings: dict, market: dict | None) -
         verdict = "🟢" if pct >= 40 else ("🟡" if pct >= 10 else "🔴")
         lines += [
             "",
-            f"На Авито сейчас ({market['count']} похожих):",
-            f"медиана <b>{money(median)} ₽</b> · обычно {money(market['p25'])}–{money(market['p75'])} ₽",
+            f"На Авито {market['count']} похожих · обычно {money(market['p25'])}–{money(market['p75'])} ₽",
+            f"медиана <b>{money(median)} ₽</b> · быстро продать ≈ {money(market['p25'])} ₽",
             f"{verdict} <b>Потенциал: {sign}{money(abs(profit))} ₽ ({sign}{abs(pct):.0f}%)</b>",
-            "",
-            "<i>Цены Авито — по похожим объявлениям. Точная модель, размер и состояние "
-            "могут отличаться, поэтому сверь пару объявлений по кнопке ниже.</i>",
         ]
+        samples = market.get("samples") or []
+        if samples:
+            lines.append("")
+            for smp in samples[:3]:
+                lines.append(f"• <a href=\"{html.escape(smp['url'])}\">{html.escape(smp['title'][:40])}</a>"
+                             f" — {money(smp['price'])} ₽")
+        lines.append("\n<i>Сверь модель, размер и состояние — цены Авито по похожим, а не по этой вещи.</i>")
     elif market is not None:
         lines += [
             "",
@@ -231,7 +235,8 @@ def legit_text(brand: str, result: dict, left: int | None, seller: list[str] | N
     lines = [f"🛡 <b>Легит-чек · {html.escape(brand)}</b>"]
     if result.get("item"):
         lines.append(f"<i>{html.escape(result['item'])}</i>")
-    lines += ["", f"{emoji} <b>{label}</b>", f"{bar} {score}/100"]
+    risk = {"low": "🟢 риск низкий", "medium": "🟡 риск средний", "high": "🔴 риск высокий"}.get(result.get("risk"))
+    lines += ["", f"{emoji} <b>{label}</b>" + (f" · {risk}" if risk else ""), f"{bar} {score}/100"]
     if result.get("good"):
         lines.append("\n<b>Выглядит как у оригинала</b>")
         lines += [f"• {html.escape(x)}" for x in result["good"]]
@@ -250,7 +255,7 @@ def legit_text(brand: str, result: dict, left: int | None, seller: list[str] | N
         "<i>Это оценка ИИ по фото, а не гарантия подлинности. Для дорогих вещей "
         "закажи профессиональный легит-чек.</i>"
     )
-    if left is not None:
+    if left is not None and left < 1000:
         lines.append(f"<i>Осталось легит-чеков в этом месяце: {left}</i>")
     return "\n".join(lines)
 
@@ -271,53 +276,51 @@ def _top(counter: dict, n: int) -> list[tuple[str, int]]:
     return sorted(counter.items(), key=lambda kv: -kv[1])[:n]
 
 
+def _word(total: int) -> str:
+    if total % 10 == 1 and total % 100 != 11:
+        return "новая находка"
+    if 2 <= total % 10 <= 4 and not 12 <= total % 100 <= 14:
+        return "новые находки"
+    return "новых находок"
+
+
 def digest_caption(pending: list, every_min: int) -> str:
+    """Короткая сводка: 2 строки, без лишнего."""
     from collections import Counter
     total = len(pending)
     by_brand = Counter(r["keyword"] for r in pending)
-    by_group = Counter(r["grp"] for r in pending)
-    word = "новая находка" if total % 10 == 1 and total % 100 != 11 else (
-        "новые находки" if 2 <= total % 10 <= 4 and not 12 <= total % 100 <= 14 else "новых находок")
-    period = f"за {every_min} мин" if every_min < 60 else f"за {every_min // 60} ч"
-    brands_line = " · ".join(f"{html.escape(brands.display_name(k))} {n}" for k, n in _top(by_brand, 5))
-    if len(by_brand) > 5:
-        brands_line += f" · ещё {sum(n for k, n in by_brand.items()) - sum(n for _, n in _top(by_brand, 5))}"
-    groups_line = " · ".join(f"{g} {n}" for g, n in _top(by_group, 5))
-    return (f"🆕 <b>{total} {word}</b> · {period}\n\n{brands_line}\n{groups_line}\n\n"
-            "<i>Листай прямо здесь — по брендам или разделам.</i>")
+    top = _top(by_brand, 3)
+    brands_line = " · ".join(f"{html.escape(brands.display_name(k))} {n}" for k, n in top)
+    rest = total - sum(n for _, n in top)
+    if rest > 0:
+        brands_line += f" · +{rest}"
+    return f"🆕 <b>{total} {_word(total)}</b>\n{brands_line}"
 
 
 def digest_keyboard(pending: list) -> InlineKeyboardMarkup:
-    from collections import Counter
-    by_brand = Counter(r["keyword"] for r in pending)
-    by_group = Counter(r["grp"] for r in pending)
-    rows = [[InlineKeyboardButton(text=f"▶️ Смотреть все · {len(pending)}", callback_data="fd:v:all:-:0")]]
-    chips = [InlineKeyboardButton(text=f"{brands.display_name(k)[:18]} · {n}", callback_data=f"fd:v:b:{brand_code(k)}:0")
-             for k, n in _top(by_brand, 4)]
-    rows += [chips[i:i + 2] for i in range(0, len(chips), 2)]
-    groups = [InlineKeyboardButton(text=f"{g} · {n}", callback_data=f"fd:v:g:{g}:0") for g, n in _top(by_group, 3)]
-    if len(groups) > 1:
-        rows.append(groups)
-    rows.append([InlineKeyboardButton(text="🔔 Как часто присылать", callback_data="nt:open")])
+    from handlers.common import webapp_button  # здесь, чтобы не было циклического импорта
+    rows = [[InlineKeyboardButton(text=f"▶️ Смотреть · {len(pending)}", callback_data="fd:v:all:-:0"),
+             InlineKeyboardButton(text="🗂 Фильтр", callback_data="fd:m:all:-:0")]]
+    app = webapp_button("Открыть в HUNTR")
+    if app:
+        rows.append([app])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def viewer_keyboard(item: dict, ftype: str, fval: str, idx: int, total: int) -> InlineKeyboardMarkup:
+    """Просмотрщик: 3 ряда кнопок вместо пяти."""
     ref = f"{item['source']}:{item['item_id']}"
     base = f"fd:v:{ftype}:{fval}:"
-    nav = []
-    if idx > 0:
-        nav.append(InlineKeyboardButton(text="‹", callback_data=f"{base}{idx - 1}"))
-    nav.append(InlineKeyboardButton(text=f"{idx + 1} / {total}", callback_data="noop"))
-    if idx < total - 1:
-        nav.append(InlineKeyboardButton(text="›", callback_data=f"{base}{idx + 1}"))
+    nav = [InlineKeyboardButton(text="‹" if idx > 0 else " ", callback_data=f"{base}{idx - 1}" if idx > 0 else "noop"),
+           InlineKeyboardButton(text=f"{idx + 1} / {total}", callback_data=f"fd:m:{ftype}:{fval}:0"),
+           InlineKeyboardButton(text="›" if idx < total - 1 else " ",
+                                callback_data=f"{base}{idx + 1}" if idx < total - 1 else "noop")]
     return InlineKeyboardMarkup(inline_keyboard=[
         nav,
-        [InlineKeyboardButton(text="Открыть на Goofish ↗", url=item["data"]["url"])],
-        [InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
-         InlineKeyboardButton(text="📊 Выгода", callback_data=f"l:pr:{ref}")],
-        [InlineKeyboardButton(text="★ В избранном" if item["fav"] else "☆ В избранное",
-                              callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
-         InlineKeyboardButton(text="🗂 Фильтр", callback_data=f"fd:m:{ftype}:{fval}:0")],
-        [InlineKeyboardButton(text="‹ Главная", callback_data="h:home")],
+        [InlineKeyboardButton(text="🛡 Легит", callback_data=f"l:lg:{ref}"),
+         InlineKeyboardButton(text="📊 Выгода", callback_data=f"l:pr:{ref}"),
+         InlineKeyboardButton(text="★" if item["fav"] else "☆", callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
+         InlineKeyboardButton(text="🙈", callback_data=f"fd:h:{ftype}:{fval}:{idx}")],
+        [InlineKeyboardButton(text="Goofish ↗", url=item["data"]["url"]),
+         InlineKeyboardButton(text="✕ Закрыть", callback_data="fd:x")],
     ])

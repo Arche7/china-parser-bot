@@ -117,7 +117,6 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, stat
         except Exception as e:
             log.warning("Не удалось отправить заставку: %s", e)
             await message.answer(caption, reply_markup=markup)
-        await message.answer("Снизу — быстрый доступ: главная, лента и бренды.", reply_markup=REPLY_KB)
         await db.update_settings(user.id)  # отмечаем, что приветствие уже было
         return
 

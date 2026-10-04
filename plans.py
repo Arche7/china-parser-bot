@@ -45,13 +45,13 @@ TRIAL = Plan(
     title="Пробный",
     price_rub=0,
     price_stars=0,
-    brands=3,
+    brands=2,
     own_brands=0,
-    interval_min=30,
-    legit_checks=2,
-    price_checks=3,
-    tagline="3 дня, чтобы понять, как это работает",
-    perks=["3 бренда из каталога", "проверка каждые 30 мин", "2 легит-чека", "3 сравнения с Авито"],
+    interval_min=60,
+    legit_checks=1,
+    price_checks=2,
+    tagline="2 дня, чтобы увидеть первые находки",
+    perks=["2 бренда из каталога", "проверка раз в час", "1 легит-чек", "2 сравнения с Авито"],
 )
 
 START = Plan(

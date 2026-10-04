@@ -85,7 +85,9 @@ WEB_PORT: int = int(os.getenv("PORT", "8080"))
 # Ник поддержки без @ — куда писать по оплате и вопросам
 SUPPORT_USERNAME: str = os.getenv("SUPPORT_USERNAME", "").strip().lstrip("@")
 # Сколько дней длится бесплатный пробный период (0 — выключить)
-TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS", "3"))
+TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS", "2"))
+# Сколько дней лента хранит находки (старше — уходят в архив, остаётся только избранное)
+FEED_DAYS: int = int(os.getenv("FEED_DAYS", "3"))
 # Сколько дней дарим пригласившему, когда друг оплатил подписку
 REFERRAL_BONUS_DAYS: int = int(os.getenv("REFERRAL_BONUS_DAYS", "7"))
 

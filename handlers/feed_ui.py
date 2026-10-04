@@ -20,15 +20,18 @@ from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 import brands
 import cards
+import config
 from db import Database
 from decoder import GROUPS
+from aiogram.filters import Command
+
 from handlers.common import BTN_FEED, back_home, btn, kb, safe_answer, show
 from monitor import Monitor
 
 log = logging.getLogger(__name__)
 router = Router(name="feed")
 
-WEEK = 7 * 86400
+WEEK = config.FEED_DAYS * 86400   # лента хранит находки за столько дней
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 NO_PHOTO = os.path.join(ASSETS, "home.jpg")
 
@@ -52,19 +55,23 @@ async def show_item(callback: CallbackQuery, db: Database, ftype: str, fval: str
     since = int(time.time()) - WEEK
     total = await db.feed_count(user_id, brand=brand, grp=grp, since=since)
     if total == 0:
-        await show(callback, "📰 <b>Лента пуста</b>\n\nЗа неделю здесь ничего не нашлось. "
+        await show(callback, f"📰 <b>Лента пуста</b>\n\nЗа {config.FEED_DAYS} дня здесь ничего не нашлось. "
                              "Добавь бренды или расширь бюджет — и находки появятся.",
                    kb([btn("🎯 Бренды", "b:list")], back_home()))
         return
     idx = max(0, min(idx, total - 1))
     item = (await db.feed_page(user_id, brand=brand, grp=grp, since=since, limit=1, offset=idx))[0]
     settings = await db.get_settings(user_id)
+    await db.mark_feed_seen(user_id, [(item["source"], item["item_id"])])
+    msg = callback.message
+    if msg and settings.get("digest_msg") == msg.message_id:
+        # Сводку открыли — больше не удаляем её при следующей
+        await db.update_settings(user_id, digest_msg=None)
     caption = cards.build_card(item["data"], item["keyword"], settings, header="")
     caption = f"<i>📰 {label} · {idx + 1} из {total}</i>\n" + caption.lstrip()
     caption = caption[:1020]
     markup = cards.viewer_keyboard(item, ftype, fval, idx, total)
     photo = item["data"].get("image") or FSInputFile(NO_PHOTO)
-    msg = callback.message
     if msg and (msg.photo or msg.animation):
         try:
             await msg.edit_media(InputMediaPhoto(media=photo, caption=caption), reply_markup=markup)
@@ -106,6 +113,38 @@ async def cb_view_fav(callback: CallbackQuery, db: Database) -> None:
         pass
 
 
+@router.callback_query(F.data.startswith("fd:h:"))
+async def cb_hide(callback: CallbackQuery, db: Database) -> None:
+    """🙈 — скрыть вещь («неинтересно») и сразу показать следующую."""
+    _, _, ftype, fval, idx = callback.data.split(":", 4)
+    user_id = callback.from_user.id
+    brand, grp, _ = await resolve_filter(db, user_id, ftype, fval)
+    items = await db.feed_page(user_id, brand=brand, grp=grp, since=int(time.time()) - WEEK, limit=1, offset=int(idx))
+    if items:
+        await db.set_feed_hidden(user_id, items[0]["source"], items[0]["item_id"], True)
+    await safe_answer(callback, "Скрыл — больше не покажу")
+    await show_item(callback, db, ftype, fval, int(idx))
+
+
+@router.callback_query(F.data == "fd:x")
+async def cb_close(callback: CallbackQuery, db: Database) -> None:
+    """✕ — убрать просмотрщик из чата (если это главная — вернуть главную)."""
+    await safe_answer(callback)
+    user = await db.get_user(callback.from_user.id)
+    msg = callback.message
+    if msg and user and user["home_msg_id"] == msg.message_id:
+        from handlers.home import restore_home
+        await restore_home(callback, db)
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        try:
+            await msg.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+
 @router.callback_query(F.data.startswith("fd:m:"))
 async def cb_filter_menu(callback: CallbackQuery, db: Database) -> None:
     user_id = callback.from_user.id
@@ -119,10 +158,11 @@ async def cb_filter_menu(callback: CallbackQuery, db: Database) -> None:
     rows += [chips[i:i + 2] for i in range(0, len(chips), 2)]
     rows.append(back_home())
     await safe_answer(callback)
-    await show(callback, "🗂 <b>Что показать?</b>\n\nНаходки за неделю — по разделам и брендам.", kb(*rows))
+    await show(callback, f"🗂 <b>Что показать?</b>\n\nНаходки за {config.FEED_DAYS} дня — по разделам и брендам.", kb(*rows))
 
 
 @router.message(F.text == BTN_FEED)
+@router.message(Command("feed"))
 async def msg_feed(message: Message, db: Database) -> None:
     facets = await db.feed_facets(message.from_user.id, since=int(time.time()) - WEEK)
     total = sum(facets["groups"].values())
@@ -130,7 +170,8 @@ async def msg_feed(message: Message, db: Database) -> None:
         await message.answer("📰 Лента пока пуста — новые находки появятся здесь.",
                              reply_markup=kb([btn("🎯 Бренды", "b:list")]))
         return
-    await message.answer(f"📰 <b>Лента</b> · {total} находок за неделю",
+    new = await db.feed_count(message.from_user.id, since=int(time.time()) - WEEK, view="new")
+    await message.answer(f"📰 <b>Лента</b> · {new} новых · {total} за {config.FEED_DAYS} дня",
                          reply_markup=kb([btn("▶️ Смотреть все", "fd:v:all:-:0")], [btn("🗂 По разделам и брендам", "fd:m:all:-:0")]))
 
 

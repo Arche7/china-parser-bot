@@ -79,6 +79,8 @@ async def profit_for(db: Database, avito: AvitoPrices, user_id: int, source: str
 
     cached = await db.get_avito(f"{brands.display_name(keyword)} {category or ''}".strip().lower(),
                                 config.AVITO_CACHE_HOURS * 3600)
+    if cached is not None and not cached.get("median"):
+        cached = None   # старый пустой результат — спросим Авито заново
     if cached is None and await quota_left(db, user_id, "price") <= 0:
         raise LimitReached("price")
     market = await avito.market(keyword, category)
@@ -97,6 +99,69 @@ async def profit_for(db: Database, avito: AvitoPrices, user_id: int, source: str
 # Легит-чек объявления
 # ----------------------------------------------------------------------
 
+_ZHIMA = [("极好", "отличный"), ("优秀", "отличный"), ("良好", "хороший"), ("中等", "средний"),
+          ("一般", "средний"), ("较差", "низкий"), ("差", "низкий")]
+
+
+def zhima_ru(credit) -> str:
+    """'信用良好' -> 'хороший' (кредитный рейтинг продавца Alipay/Zhima)."""
+    text = str(credit)
+    for cn, ru in _ZHIMA:
+        if cn in text:
+            return ru
+    return text
+
+
+def _num(value) -> float | None:
+    try:
+        return float(str(value).replace("%", "").replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def seller_trust(detail: dict | None) -> int:
+    """
+    Насколько можно доверять продавцу: -2…+2.
+    Учитываем рейтинг Zhima, число продаж, % хороших отзывов и возраст аккаунта.
+    """
+    if not detail:
+        return 0
+    s = detail.get("seller") or {}
+    score = 0
+    credit = zhima_ru(s.get("zhimaCredit") or "")
+    if credit == "отличный":
+        score += 1
+    elif credit in ("средний", "низкий"):
+        score -= 1
+    sold = _num(s.get("totalSold"))
+    if sold is not None:
+        score += 1 if sold >= 50 else (-1 if sold < 3 else 0)
+    rate = _num(s.get("goodReviewRate"))
+    if rate is not None:
+        rate = rate * 100 if rate <= 1 else rate
+        if rate < 90:
+            score -= 1
+    days = _num(s.get("registeredDays"))
+    if days is not None and days < 60:
+        score -= 1
+    return max(-2, min(2, score))
+
+
+def risk_of(result: dict, photos: int, trust: int) -> str:
+    """Итоговый риск: low / medium / high — по оценке ИИ, числу фото и продавцу."""
+    score = result.get("score")
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        score = 50
+    score += trust * 5
+    if photos < 3:
+        score = min(score, 70)      # по 1–2 фото нельзя честно сказать «оригинал»
+    if result.get("verdict") == "likely_fake":
+        score = min(score, 40)
+    return "low" if score >= 80 else ("medium" if score >= 55 else "high")
+
+
 def seller_lines(detail: dict | None) -> list[str]:
     """Репутация продавца по-русски — то, что видно в полной карточке Goofish."""
     if not detail:
@@ -105,8 +170,7 @@ def seller_lines(detail: dict | None) -> list[str]:
     lines = []
     credit = s.get("zhimaCredit")
     if credit:
-        good = "极好" in str(credit) or "优秀" in str(credit)
-        lines.append(f"кредит Zhima: {'отличный' if good else credit}")
+        lines.append(f"кредит Zhima: {zhima_ru(credit)}")
     if s.get("totalSold") not in (None, ""):
         lines.append(f"продал вещей: {s['totalSold']}")
     if s.get("goodReviewRate") not in (None, ""):
@@ -123,8 +187,10 @@ async def enrich(db: Database, sources: dict, keyword: str, source: str, item_id
     src = sources.get(source)
     detail = await src.details(item_id) if src else None
     data["detail"] = detail or {}
+    if detail and detail.get("status"):
+        data["status"] = detail["status"]   # продано / снято — уберём из ленты
     await db.save_listing(source, item_id, keyword, data)
-    return detail
+    return detail if detail and detail.get("images") is not None else (detail or None)
 
 
 async def legit_for(db: Database, sources: dict, user_id: int, source: str, item_id: str) -> dict:
@@ -137,7 +203,9 @@ async def legit_for(db: Database, sources: dict, user_id: int, source: str, item
         raise LookupError("listing")
     keyword, data = found
     if data.get("legit"):
-        return {"keyword": keyword, "data": data, "result": data["legit"], "seller": seller_lines(data.get("detail")),
+        result = dict(data["legit"])
+        result.setdefault("risk", risk_of(result, data.get("legit_photos", 1), seller_trust(data.get("detail"))))
+        return {"keyword": keyword, "data": data, "result": result, "seller": seller_lines(data.get("detail")),
                 "photos": data.get("legit_photos", 1), "cached": True, "left": await quota_left(db, user_id, "legit")}
     if await quota_left(db, user_id, "legit") <= 0:
         raise LimitReached("legit")
@@ -171,6 +239,7 @@ async def legit_for(db: Database, sources: dict, user_id: int, source: str, item
         notes="\n".join(notes) or None,
     )
     if result:
+        result["risk"] = risk_of(result, len(images[:6]), seller_trust(detail))
         await db.add_usage(user_id, "legit")
         data["legit"] = result
         data["legit_photos"] = len(images[:6])

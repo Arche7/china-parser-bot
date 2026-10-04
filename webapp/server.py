@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
 AUTH_MAX_AGE = 86400
-FEED_DAYS = 7
+FEED_DAYS = config.FEED_DAYS
 FREE_PATHS = {("GET", "/api/me"), ("GET", "/api/plans"), ("POST", "/api/invoice"), ("POST", "/api/trial")}
 
 DB = web.AppKey("db", object)
@@ -121,7 +121,7 @@ def _price(value, name: str) -> float | None:
 # ----------------------------------------------------------------------
 
 def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
-         found_at: int | None = None, grp: str | None = None) -> dict:
+         found_at: int | None = None, grp: str | None = None, seen: bool = True) -> dict:
     title = data.get("title") or ""
     d = decoder.decode(title)
     price = data.get("price")
@@ -151,6 +151,8 @@ def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
         "color": d.color,
         "notes": list(d.notes),
         "fav": bool(fav),
+        "seen": bool(seen),
+        "status": data.get("status") or None,   # sold / gone — вещь уже продана или снята
         "legit": {"score": legit.get("score"), "verdict": legit.get("verdict")} if isinstance(legit, dict) else None,
     }
 
@@ -184,8 +186,10 @@ async def api_me(request: web.Request) -> web.Response:
         "counts": {
             "brands": len(await db.list_watches(uid)),
             "today": await db.count_sent_since(uid, since),
-            "feed_new": await db.feed_count(uid, since=since),
+            "feed_new": await db.feed_count(uid, since=_now() - FEED_DAYS * 86400, view="new"),
+            "feed_total": await db.feed_count(uid, since=_now() - FEED_DAYS * 86400),
         },
+        "feed_days": FEED_DAYS,
         "settings": {k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
         "paused": bool(user and user["paused"]),
         "rate": rates.cny_rub(),
@@ -197,24 +201,64 @@ async def api_feed(request: web.Request) -> web.Response:
     q = request.query
     brand = q.get("brand") or None
     grp = q.get("group") or None
+    view = "new" if q.get("view") == "new" else "all"
     try:
         offset = max(0, int(q.get("offset", 0)))
         limit = min(60, max(1, int(q.get("limit", 30))))
     except ValueError:
         raise ApiError(400, "bad_paging")
     since = _now() - FEED_DAYS * 86400
-    rows = await db.feed_page(uid, brand=brand, grp=grp, since=since, limit=limit, offset=offset)
-    total = await db.feed_count(uid, brand=brand, grp=grp, since=since)
-    facets = await db.feed_facets(uid, since)
+    rows = await db.feed_page(uid, brand=brand, grp=grp, since=since, limit=limit, offset=offset, view=view)
+    total = await db.feed_count(uid, brand=brand, grp=grp, since=since, view=view)
+    facets = await db.feed_facets(uid, since, view=view)
     return web.json_response({
-        "items": [card(r["source"], r["item_id"], r["keyword"], r["data"], r["fav"], r["found_at"], r["grp"])
-                  for r in rows],
+        "items": [card(r["source"], r["item_id"], r["keyword"], r["data"], r["fav"], r["found_at"], r["grp"],
+                       r["seen"]) for r in rows],
         "total": total,
+        "view": view,
+        "new_total": total if view == "new" else await db.feed_count(uid, since=since, view="new"),
+        "all_total": total if view == "all" and not brand and not grp else await db.feed_count(uid, since=since),
+        "feed_days": FEED_DAYS,
         "facets": {
             "brands": [{"key": k, "title": brands.display_name(k), "count": n} for k, n in facets["brands"].items()],
             "groups": [{"name": g, "count": n} for g, n in facets["groups"].items()],
         },
     })
+
+
+async def api_seen(request: web.Request) -> web.Response:
+    """Отметить просмотренными: {"items": [{"source", "item_id"}, ...]} или {"all": true}."""
+    db, uid = request.app[DB], request["uid"]
+    body = await _body(request)
+    if body.get("all") is True:
+        await db.mark_all_seen(uid)
+    else:
+        raw = body.get("items")
+        if not isinstance(raw, list) or len(raw) > 200:
+            raise ApiError(400, "bad_items")
+        pairs = []
+        for it in raw:
+            if isinstance(it, dict) and it.get("source") and it.get("item_id"):
+                pairs.append((str(it["source"])[:20], str(it["item_id"])[:40]))
+        await db.mark_feed_seen(uid, pairs)
+    new_total = await db.feed_count(uid, since=_now() - FEED_DAYS * 86400, view="new")
+    return web.json_response({"ok": True, "new_total": new_total})
+
+
+async def api_hide(request: web.Request) -> web.Response:
+    """Скрыть вещь из ленты («неинтересно») или вернуть: {"source", "item_id", "hidden": bool}."""
+    db, uid = request.app[DB], request["uid"]
+    body = await _body(request)
+    source, item_id = str(body.get("source") or ""), str(body.get("item_id") or "")
+    if not source or not item_id:
+        raise ApiError(400, "bad_item")
+    hidden = body.get("hidden", True)
+    if not isinstance(hidden, bool):
+        raise ApiError(400, "bad_hidden")
+    if not await db.set_feed_hidden(uid, source, item_id, hidden):
+        raise ApiError(404, "not_found")
+    new_total = await db.feed_count(uid, since=_now() - FEED_DAYS * 86400, view="new")
+    return web.json_response({"ok": True, "new_total": new_total})
 
 
 async def api_fav(request: web.Request) -> web.Response:
@@ -252,7 +296,12 @@ async def api_brands(request: web.Request) -> web.Response:
         "items": [_watch_json(w, request["admin"], plan.code) for w in watches],
         "catalog": [{"key": k, "title": v["title"], "tracked": k in tracked} for k, v in brands.BRANDS.items()],
         "limits": {"brands": plan.brands, "own_brands": plan.own_brands,
-                   "used": len(watches), "own_used": await count_own(db, uid)},
+                   "used": len(watches), "own_used": await count_own(db, uid),
+                   # реальный интервал проверки брендов из каталога (с учётом нижней границы сервера)
+                   "interval": monitor_mod.watch_interval({"is_admin": request["admin"], "plan": plan.code,
+                                                           "keyword": "gucci"}),
+                   "own_interval": monitor_mod.watch_interval({"is_admin": request["admin"], "plan": plan.code,
+                                                               "keyword": "__own__"})},
         "presets": [{"label": label, "min": lo, "max": hi} for label, lo, hi in brands.PRICE_PRESETS],
     })
 
@@ -329,7 +378,8 @@ async def api_profit(request: web.Request) -> web.Response:
         raise ApiError(404, "not_found")
     except services.LimitReached:
         raise ApiError(429, "limit")
-    res.pop("data", None)
+    data = res.pop("data", None) or {}
+    res["status"] = data.get("status") or None
     return web.json_response(res)
 
 
@@ -343,7 +393,8 @@ async def api_legit(request: web.Request) -> web.Response:
         raise ApiError(404, "not_found")
     except services.LimitReached:
         raise ApiError(429, "limit")
-    res.pop("data", None)
+    data = res.pop("data", None) or {}
+    res["status"] = data.get("status") or None
     return web.json_response(res)
 
 
@@ -458,6 +509,8 @@ def create_app(db, bot, monitor, avito, sources: dict) -> web.Application:
     r.add_get("/api/me", api_me)
     r.add_get("/api/feed", api_feed)
     r.add_post("/api/fav", api_fav)
+    r.add_post("/api/seen", api_seen)
+    r.add_post("/api/hide", api_hide)
     r.add_get("/api/favorites", api_favorites)
     r.add_get("/api/brands", api_brands)
     r.add_post("/api/brands", api_brand_add)
