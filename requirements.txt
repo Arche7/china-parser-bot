@@ -1,0 +1,4 @@
+aiogram>=3.13,<4
+apify-client>=1.8,<2
+aiosqlite>=0.20
+python-dotenv>=1.0
