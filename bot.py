@@ -3,9 +3,10 @@
 
 Что происходит при запуске:
   1. Проверяем настройки (.env / переменные Railway).
-  2. Подключаемся к базе данных.
+  2. Подключаемся к базе данных (старая база обновится сама).
   3. Создаём площадки (Goofish работает, 95分 — заготовка).
-  4. Запускаем монитор в фоне и бота в режиме polling.
+  4. Обновляем описание бота, меню команд и курс юаня.
+  5. Запускаем монитор в фоне и бота в режиме polling.
 """
 
 import asyncio
@@ -18,6 +19,9 @@ from aiogram.types import BotCommand
 
 import config
 import handlers
+import rates
+import texts
+from avito import AvitoPrices
 from db import Database
 from monitor import Monitor
 from sources import Fen95Source, GoofishSource
@@ -32,18 +36,19 @@ logging.getLogger("apify_client").setLevel(logging.WARNING)
 log = logging.getLogger("bot")
 
 
-async def set_commands(bot: Bot) -> None:
-    """Меню команд, которое видно в Telegram по кнопке «Меню»."""
+async def set_profile(bot: Bot) -> None:
+    """Меню команд и описание бота (то, что видно до нажатия «Старт»)."""
     await bot.set_my_commands([
-        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="start", description="Пульт"),
         BotCommand(command="add", description="Добавить бренд"),
-        BotCommand(command="preset", description="Готовый набор брендов"),
         BotCommand(command="list", description="Мои бренды"),
-        BotCommand(command="del", description="Удалить бренд"),
-        BotCommand(command="pause", description="Пауза уведомлений"),
-        BotCommand(command="resume", description="Включить уведомления"),
-        BotCommand(command="help", description="Помощь"),
+        BotCommand(command="help", description="Как это работает"),
     ])
+    try:
+        await bot.set_my_short_description(texts.BOT_SHORT_DESCRIPTION[:120])
+        await bot.set_my_description(texts.BOT_DESCRIPTION[:512])
+    except Exception as e:  # Telegram ограничивает частоту — не критично
+        log.warning("Не удалось обновить описание бота: %s", e)
 
 
 async def main() -> None:
@@ -70,26 +75,25 @@ async def main() -> None:
         ),
     )
     monitor = Monitor(bot, db, sources)
+    avito = AvitoPrices(db)
 
     dp = Dispatcher()
-    # Эти объекты будут автоматически передаваться в обработчики
-    # (в функциях handlers.py есть параметры db и monitor)
+    # Эти объекты автоматически передаются в обработчики
+    # (у функций в папке handlers есть параметры db, monitor, avito)
     dp["db"] = db
     dp["monitor"] = monitor
+    dp["avito"] = avito
+    dp.include_router(handlers.setup(db))
 
-    access = handlers.AccessMiddleware(db)
-    handlers.router.message.middleware(access)
-    handlers.router.callback_query.middleware(access)
-    dp.include_router(handlers.router)
-
-    await set_commands(bot)
+    await rates.refresh()
+    await set_profile(bot)
     monitor_task = asyncio.create_task(monitor.run_forever())
 
     me = await bot.get_me()
     log.info("Бот @%s запущен. Админы: %s", me.username, config.ADMIN_IDS or "не заданы")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         monitor_task.cancel()
         for source in sources:

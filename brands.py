@@ -20,10 +20,14 @@
 
   title   — красивое название для сообщений.
 
+  ru      — как бренд пишут на Авито (по-русски и латиницей). Нужно для
+            сравнения цен: так бот понимает, что объявление на Авито — про наш бренд.
+
 Пробелы, точки и дефисы в написаниях не важны: "c.p. company",
 "cp company" и "CPCOMPANY" — для бота одно и то же.
 
-Чтобы добавить бренд — скопируй любой блок ниже и поменяй слова.
+Чтобы добавить бренд в каталог — скопируй любой блок ниже и поменяй слова.
+Он сразу появится в боте среди кнопок «➕ Добавить».
 Чтобы урезать расходы — оставь в "search" одно слово.
 """
 
@@ -40,6 +44,7 @@ BRANDS: dict[str, dict] = {
         # «GG» специально НЕ добавлен: это слишком короткое сочетание,
         # оно встречается в куче посторонних заголовков.
         "aliases": ["gucci", "古驰", "古奇", "古琦"],
+        "ru": ["гуччи", "gucci"],
     },
     "cp company": {
         "title": "C.P. Company",
@@ -48,28 +53,33 @@ BRANDS: dict[str, dict] = {
         # Голое «CP» НЕ добавлено: в китайском сленге CP = «парочка»
         # (情侣), и бот слал бы парные футболки и кружки.
         "aliases": ["cp company", "c.p. company", "cpcompany", "c.p.company"],
+        "ru": ["cp company", "си пи компани", "c.p. company"],
     },
     "stone island": {
         "title": "Stone Island",
         "search": ["stone island", "石头岛"],
         "aliases": ["stone island", "stoneisland", "石头岛"],
+        "ru": ["стон айленд", "стоник", "stone island"],
     },
     "louis vuitton": {
         "title": "Louis Vuitton",
         "search": ["lv", "路易威登"],
         # 驴牌 («ослиная марка») — разговорное прозвище LV в Китае
         "aliases": ["louis vuitton", "lv", "路易威登", "驴牌"],
+        "ru": ["луи виттон", "louis vuitton"],
     },
     "prada": {
         "title": "Prada",
         "search": ["prada", "普拉达"],
         "aliases": ["prada", "普拉达"],
+        "ru": ["прада", "prada"],
     },
     "saint laurent": {
         "title": "Saint Laurent",
         "search": ["ysl", "圣罗兰"],
         # 杨树林 («тополиная роща») — шуточное прозвище YSL у китайцев
         "aliases": ["saint laurent", "yves saint laurent", "ysl", "圣罗兰", "杨树林"],
+        "ru": ["сен лоран", "saint laurent", "ysl"],
     },
     "burberry": {
         "title": "Burberry",
@@ -77,11 +87,89 @@ BRANDS: dict[str, dict] = {
         # 博柏利 — официальное название, 巴宝莉/巴宝利 — народное,
         # Burberrys — старое написание на винтажных вещах
         "aliases": ["burberry", "burberrys", "bbr", "博柏利", "巴宝莉", "巴宝利"],
+        "ru": ["барберри", "бербери", "burberry"],
+    },
+    # ----- Дальше — бренды каталога, которые НЕ входят в «Готовый набор».
+    # Их можно выбрать кнопкой в боте. Пока бренд никто не отслеживает,
+    # он ничего не стоит: запросы идут только по выбранным брендам.
+    "arcteryx": {
+        "title": "Arc'teryx",
+        "search": ["始祖鸟"],
+        "aliases": ["arcteryx", "arc'teryx", "arc teryx", "始祖鸟"],
+        "ru": ["арктерикс", "arcteryx"],
+    },
+    "moncler": {
+        "title": "Moncler",
+        "search": ["moncler", "蒙口"],
+        # 蒙口 — народное название, 盟可睐 — официальное
+        "aliases": ["moncler", "蒙口", "盟可睐"],
+        "ru": ["монклер", "moncler"],
+    },
+    "chrome hearts": {
+        "title": "Chrome Hearts",
+        "search": ["chrome hearts", "克罗心"],
+        "aliases": ["chrome hearts", "chromehearts", "克罗心"],
+        "ru": ["хром хартс", "chrome hearts"],
+    },
+    "balenciaga": {
+        "title": "Balenciaga",
+        "search": ["balenciaga", "巴黎世家"],
+        "aliases": ["balenciaga", "巴黎世家"],
+        "ru": ["баленсиага", "balenciaga"],
+    },
+    "maison margiela": {
+        "title": "Maison Margiela",
+        "search": ["margiela", "马吉拉"],
+        "aliases": ["maison margiela", "margiela", "mm6", "马吉拉"],
+        "ru": ["маржела", "марджела", "margiela"],
+    },
+    "dior": {
+        "title": "Dior",
+        "search": ["dior", "迪奥"],
+        "aliases": ["dior", "christian dior", "迪奥"],
+        "ru": ["диор", "dior"],
+    },
+    "miu miu": {
+        "title": "Miu Miu",
+        "search": ["miumiu", "缪缪"],
+        "aliases": ["miu miu", "miumiu", "缪缪"],
+        "ru": ["миу миу", "miu miu"],
+    },
+    "loewe": {
+        "title": "Loewe",
+        "search": ["loewe", "罗意威"],
+        "aliases": ["loewe", "罗意威"],
+        "ru": ["лоэве", "loewe"],
+    },
+    "canada goose": {
+        "title": "Canada Goose",
+        "search": ["加拿大鹅"],
+        "aliases": ["canada goose", "canadagoose", "加拿大鹅"],
+        "ru": ["канада гус", "canada goose"],
+    },
+    "bottega veneta": {
+        "title": "Bottega Veneta",
+        "search": ["bottega", "葆蝶家"],
+        # «BV» не добавлен: слишком короткое сочетание
+        "aliases": ["bottega veneta", "bottega", "葆蝶家"],
+        "ru": ["боттега", "bottega"],
     },
 }
 
-# Бренды, которые добавляет команда /preset (в таком порядке)
-PRESET: list[str] = list(BRANDS)
+# Бренды, которые добавляет «Готовый набор» (в таком порядке)
+PRESET: list[str] = [
+    "gucci", "cp company", "stone island", "louis vuitton", "prada", "saint laurent", "burberry",
+]
+
+# Варианты цены для кнопок при добавлении бренда: (подпись, от, до) в юанях
+PRICE_PRESETS: list[tuple[str, float | None, float | None]] = [
+    ("до ¥500", None, 500),
+    ("¥200–1 800", 200, 1800),
+    ("¥500–3 000", 500, 3000),
+    ("¥1 000–5 000", 1000, 5000),
+    ("от ¥3 000", 3000, None),
+    ("любая", None, None),
+]
 
 # Если в заголовке есть одно из этих слов — объявление не присылаем.
 # Это типичные пометки копий и подделок на китайских площадках.
@@ -153,6 +241,19 @@ def get_brand(keyword: str) -> dict | None:
 def display_name(keyword: str) -> str:
     brand = get_brand(keyword)
     return brand["title"] if brand else keyword
+
+
+def is_catalog(keyword: str) -> bool:
+    """Бренд из каталога HUNTR (а не «свой»)?"""
+    return get_brand(keyword) is not None
+
+
+def russian_aliases(keyword: str) -> list[str]:
+    """Как бренд пишут на Авито (для сравнения цен)."""
+    brand = get_brand(keyword)
+    if brand:
+        return [a.lower() for a in brand.get("ru", [])] + [brand["title"].lower()]
+    return [keyword.lower()]
 
 
 def search_queries(keyword: str) -> list[str]:

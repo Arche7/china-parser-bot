@@ -1,4 +1,6 @@
 aiogram>=3.13,<4
+aiohttp>=3.9
 apify-client>=1.8,<2
 aiosqlite>=0.20
+tzdata>=2024.1
 python-dotenv>=1.0

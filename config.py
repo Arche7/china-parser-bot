@@ -47,16 +47,20 @@ APIFY_TOKEN: str = os.getenv("APIFY_TOKEN", "").strip()
 ADMIN_IDS: list[int] = _int_list(os.getenv("ADMIN_IDS", ""))
 
 # --- Мониторинг ---
-# Как часто проверять новые объявления (в минутах)
-CHECK_INTERVAL_MIN: int = int(os.getenv("CHECK_INTERVAL_MIN", "30"))
+# Интервал проверки теперь зависит от тарифа (plans.py: 30/15/10 мин).
+# Эта настройка — интервал для старых пользователей без тарифа и
+# нижняя граница: чаще неё бот не проверит ни один бренд.
+CHECK_INTERVAL_MIN: int = int(os.getenv("CHECK_INTERVAL_MIN", "10"))
 # Сколько свежих объявлений забирать за ОДИН поисковый запрос.
 # У брендов из brands.py обычно 2 запроса (латиница + по-китайски),
 # поэтому за одну проверку бренда приходит до 2 × MAX_ITEMS объявлений.
 # Больше = меньше шанс пропустить, но дороже на Apify.
 MAX_ITEMS: int = int(os.getenv("MAX_ITEMS", "5"))
-# Сколько брендов может добавить один пользователь
+# Лимит брендов теперь задаётся тарифом (plans.py). Эта настройка
+# осталась для совместимости и больше ни на что не влияет.
 MAX_BRANDS_PER_USER: int = int(os.getenv("MAX_BRANDS_PER_USER", "10"))
-# Курс юаня к рублю — только для подсказки «≈ ₽» в сообщении
+# Курс юаня к рублю. Бот сам берёт свежий курс ЦБ раз в несколько часов,
+# а это значение — запасное, если сайт ЦБ не ответил.
 CNY_RUB_RATE: float = float(os.getenv("CNY_RUB_RATE", "11.5"))
 
 # --- Apify ---
@@ -67,6 +71,54 @@ APIFY_ACTOR_ID: str = os.getenv(
 APIFY_PROXY_COUNTRY: str = os.getenv("APIFY_PROXY_COUNTRY", "HK").strip()
 # Примерная цена Apify за 1000 объявлений в режиме summary (для команды /stats)
 APIFY_PRICE_PER_1000: float = float(os.getenv("APIFY_PRICE_PER_1000", "1.6"))
+
+# --- Бренд и ссылки ---
+# Как называется продукт в сообщениях
+BRAND_NAME: str = os.getenv("BRAND_NAME", "HUNTR").strip()
+# Ссылка на мини-приложение HUNTR (https://...). Пока пусто — кнопки нет.
+WEBAPP_URL: str = os.getenv("WEBAPP_URL", "").strip()
+# Ник поддержки без @ — куда писать по оплате и вопросам
+SUPPORT_USERNAME: str = os.getenv("SUPPORT_USERNAME", "").strip().lstrip("@")
+# Сколько дней длится бесплатный пробный период (0 — выключить)
+TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS", "3"))
+# Сколько дней дарим пригласившему, когда друг оплатил подписку
+REFERRAL_BONUS_DAYS: int = int(os.getenv("REFERRAL_BONUS_DAYS", "7"))
+
+# --- Расписание проверок ---
+# Как часто монитор «просыпается» и смотрит, какие бренды пора проверить.
+# Сам интервал проверки бренда зависит от тарифа (см. plans.py).
+TICK_MIN: int = int(os.getenv("TICK_MIN", "5"))
+# Умная экономия: если по бренду несколько проверок подряд не было новинок,
+# проверяем его реже (максимум в столько раз). 1 — выключить.
+ADAPTIVE_MAX_FACTOR: float = float(os.getenv("ADAPTIVE_MAX_FACTOR", "3"))
+
+# --- ИИ (перевод заголовков и легит-чек) ---
+# Подходит любой сервис с OpenAI-совместимым API: OpenAI, OpenRouter,
+# DeepSeek, ProxyAPI и т. п. Пустой ключ — функции ИИ выключены,
+# заголовки переводятся встроенным словарём.
+AI_API_KEY: str = os.getenv("AI_API_KEY", "").strip()
+AI_BASE_URL: str = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+# Дешёвая модель для перевода заголовков
+AI_MODEL: str = os.getenv("AI_MODEL", "gpt-4o-mini").strip()
+# Модель, которая «видит» фото — для легит-чека
+AI_VISION_MODEL: str = os.getenv("AI_VISION_MODEL", "gpt-4o").strip()
+
+# --- Сравнение цен с Авито ---
+# Официальный API Авито не умеет искать чужие объявления, поэтому
+# цены берём через актор на Apify (тот же APIFY_TOKEN).
+AVITO_ENABLED: bool = os.getenv("AVITO_ENABLED", "1").strip() not in ("0", "false", "no", "")
+AVITO_ACTOR_ID: str = os.getenv("AVITO_ACTOR_ID", "ahaham_bytiz/avito-scraper").strip()
+AVITO_MAX_ITEMS: int = int(os.getenv("AVITO_MAX_ITEMS", "30"))
+# Сколько часов помнить цены Авито по одному запросу (экономит деньги)
+AVITO_CACHE_HOURS: int = int(os.getenv("AVITO_CACHE_HOURS", "24"))
+
+# --- Калькулятор себестоимости (значения по умолчанию, каждый может поменять у себя) ---
+# Доставка Китай → Россия, ₽ за кг
+DELIVERY_RUB_PER_KG: int = int(os.getenv("DELIVERY_RUB_PER_KG", "1000"))
+# Комиссия байера/посредника, %
+BUYER_FEE_PCT: float = float(os.getenv("BUYER_FEE_PCT", "5"))
+# Курс доллара — только для подсказок о расходах в /stats
+USD_RUB_RATE: float = float(os.getenv("USD_RUB_RATE", "82"))
 
 # --- База данных ---
 DB_PATH: str = os.getenv("DB_PATH", "").strip() or _default_db_path()
