@@ -3,7 +3,7 @@
 
 Все секреты (токены) и параметры берутся из переменных окружения.
 Локально они читаются из файла .env (см. .env.example),
-на Amvera — задаются в разделе «Переменные» проекта.
+на Railway — задаются во вкладке Variables сервиса.
 """
 
 import os
@@ -25,8 +25,12 @@ def _int_list(value: str) -> list[int]:
 
 
 def _default_db_path() -> str:
-    # На Amvera постоянное хранилище смонтировано в /data —
-    # всё, что лежит там, не стирается при пересборке.
+    # На Railway база должна лежать на «томе» (Volume) — это диск, который
+    # не стирается при каждом новом деплое. Railway сам сообщает, куда
+    # смонтирован том, через переменную RAILWAY_VOLUME_MOUNT_PATH.
+    volume = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if volume:
+        return os.path.join(volume, "bot.db")
     if os.path.isdir("/data"):
         return "/data/bot.db"
     # Локально (на Mac) база будет лежать рядом с кодом
@@ -78,7 +82,7 @@ def check_config() -> None:
             "Не заданы обязательные переменные: "
             + ", ".join(missing)
             + ".\nСоздай файл .env по образцу .env.example (локально) "
-            "или добавь переменные в настройках проекта на Amvera."
+            "или добавь переменные во вкладке Variables на Railway."
         )
     if not ADMIN_IDS:
         print(

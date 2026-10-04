@@ -40,6 +40,7 @@ from aiogram.types import (
 )
 
 import config
+from brands_cn import chinese_name
 from db import Database
 from monitor import Monitor
 
@@ -91,9 +92,11 @@ HELP_TEXT = (
     "/del название — удалить бренд\n"
     "/pause и /resume — пауза уведомлений\n"
     "/id — мой Telegram ID\n\n"
-    "💡 <b>Совет:</b> Goofish — китайский сайт, поэтому иногда китайское "
-    "название бренда находит больше (например, <code>始祖鸟</code> для Arc'teryx). "
-    "Можно добавить оба варианта.\n\n"
+    "🇨🇳 <b>Китайские названия:</b> Goofish — китайский сайт, и продавцы часто "
+    "пишут бренд иероглифами. Если я знаю китайское название бренда "
+    "(например, <code>始祖鸟</code> для Arc'teryx), то сам предложу добавить и его. "
+    "Можно добавить и вручную: <code>/add 始祖鸟</code>. Одно и то же объявление "
+    "дважды не придёт.\n\n"
     "Площадки: Goofish (闲鱼) ✅ · 95分 — скоро"
 )
 
@@ -232,10 +235,38 @@ async def add_brand(message: Message, db: Database, monitor: Monitor, raw_text: 
         "Ищу текущие объявления — это может занять до пары минут…",
         reply_markup=MAIN_MENU,
     )
-    # Первый запрос делаем в фоне, чтобы бот не «зависал» на время поиска
+    start_preview(monitor, user_id, keyword, price_min, price_max)
+    await offer_chinese_name(message, db, user_id, keyword)
+
+
+def start_preview(
+    monitor: Monitor, user_id: int, keyword: str, price_min: float | None, price_max: float | None
+) -> None:
+    """Первый запрос делаем в фоне, чтобы бот не «зависал» на время поиска."""
     task = asyncio.create_task(monitor.preview_new_keyword(user_id, keyword, price_min, price_max))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+async def offer_chinese_name(message: Message, db: Database, user_id: int, keyword: str) -> None:
+    """Если знаем китайское название бренда — предлагаем добавить и его."""
+    cn = chinese_name(keyword)
+    if not cn or cn == keyword or await db.get_watch_by_keyword(user_id, cn):
+        return
+    watch = await db.get_watch_by_keyword(user_id, keyword)
+    if not watch:
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"✅ Добавить {cn}", callback_data=f"cn:{watch['id']}"),
+        InlineKeyboardButton(text="Не надо", callback_data="cnno"),
+    ]])
+    await message.answer(
+        f"🇨🇳 На Goofish <b>{html.escape(keyword)}</b> часто пишут по-китайски: "
+        f"<b>{cn}</b>. Добавить и это название? Так найдётся больше объявлений.\n\n"
+        "<i>Это займёт ещё одно место в списке брендов и ещё один запрос к Apify "
+        "при каждой проверке. Одно и то же объявление дважды не придёт.</i>",
+        reply_markup=keyboard,
+    )
 
 
 def fmt_date(ts: int) -> str:
@@ -357,6 +388,47 @@ async def cb_delete(callback: CallbackQuery, db: Database) -> None:
         await callback.message.edit_text(text, reply_markup=keyboard)
     except Exception:
         pass  # сообщение не изменилось — не страшно
+
+
+@router.callback_query(F.data.startswith("cn:"))
+async def cb_add_chinese(callback: CallbackQuery, db: Database, monitor: Monitor) -> None:
+    user_id = callback.from_user.id
+    try:
+        watch_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer()
+        return
+    watch = await db.get_watch(user_id, watch_id)
+    cn = chinese_name(watch["keyword"]) if watch else None
+    if not cn:
+        await callback.answer("Исходный бренд уже удалён", show_alert=True)
+        return
+    if await db.get_watch_by_keyword(user_id, cn) is None:
+        if await db.count_watches(user_id) >= config.MAX_BRANDS_PER_USER:
+            await callback.answer(
+                f"Лимит {config.MAX_BRANDS_PER_USER} брендов. Удали лишний через /list.",
+                show_alert=True,
+            )
+            return
+        await db.add_watch(user_id, cn, watch["price_min"], watch["price_max"])
+        start_preview(monitor, user_id, cn, watch["price_min"], watch["price_max"])
+    await callback.answer(f"Добавил {cn}")
+    try:
+        await callback.message.edit_text(
+            f"✅ Добавил и китайское название <b>{cn}</b> "
+            f"({price_text(watch['price_min'], watch['price_max'])})."
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "cnno")
+async def cb_skip_chinese(callback: CallbackQuery) -> None:
+    await callback.answer("Ок")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
 
 @router.message(Command("del"))

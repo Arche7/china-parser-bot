@@ -5,6 +5,8 @@
   users   — пользователи бота (и до какого числа у них подписка)
   watches — бренды/запросы, которые отслеживает пользователь
   seen    — объявления, которые бот уже видел (чтобы не слать повторно)
+  sent    — что уже отправлено каждому пользователю (чтобы одно и то же
+            объявление не пришло дважды, если оно нашлось по двум названиям)
 """
 
 import time
@@ -41,7 +43,16 @@ CREATE TABLE IF NOT EXISTS seen (
     PRIMARY KEY (source, keyword, item_id)
 );
 
+CREATE TABLE IF NOT EXISTS sent (
+    user_id     INTEGER NOT NULL,
+    source      TEXT NOT NULL,
+    item_id     TEXT NOT NULL,
+    sent_at     INTEGER NOT NULL,
+    PRIMARY KEY (user_id, source, item_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_watches_keyword ON watches (keyword);
+CREATE INDEX IF NOT EXISTS idx_sent_time ON sent (sent_at);
 CREATE INDEX IF NOT EXISTS idx_seen_time ON seen (first_seen);
 """
 
@@ -154,6 +165,19 @@ class Database:
         await self.conn.commit()
         return True
 
+    async def get_watch(self, user_id: int, watch_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM watches WHERE id = ? AND user_id = ?", (watch_id, user_id)
+        )
+        return await cur.fetchone()
+
+    async def get_watch_by_keyword(self, user_id: int, keyword: str) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM watches WHERE user_id = ? AND keyword = ?",
+            (user_id, keyword.strip().lower()),
+        )
+        return await cur.fetchone()
+
     async def list_watches(self, user_id: int) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
             "SELECT * FROM watches WHERE user_id = ? ORDER BY created_at", (user_id,)
@@ -231,8 +255,25 @@ class Database:
         )
         await self.conn.commit()
 
+    # ---------------- Что уже отправлено пользователю ----------------
+
+    async def was_sent(self, user_id: int, source: str, item_id: str) -> bool:
+        cur = await self.conn.execute(
+            "SELECT 1 FROM sent WHERE user_id = ? AND source = ? AND item_id = ?",
+            (user_id, source, item_id),
+        )
+        return (await cur.fetchone()) is not None
+
+    async def mark_sent(self, user_id: int, source: str, item_id: str) -> None:
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO sent (user_id, source, item_id, sent_at) VALUES (?, ?, ?, ?)",
+            (user_id, source, item_id, _now()),
+        )
+        await self.conn.commit()
+
     async def cleanup_seen(self, older_than_days: int = 60) -> None:
         """Удаляет очень старые записи, чтобы база не разрасталась."""
         border = _now() - older_than_days * 86400
         await self.conn.execute("DELETE FROM seen WHERE first_seen < ?", (border,))
+        await self.conn.execute("DELETE FROM sent WHERE sent_at < ?", (border,))
         await self.conn.commit()

@@ -91,6 +91,9 @@ class Monitor:
         self.source_titles = {s.name: s.title for s in sources}
         # Не больше 3 запусков актора одновременно
         self._semaphore = asyncio.Semaphore(3)
+        # Чтобы одно объявление не ушло человеку дважды (если оно нашлось
+        # сразу по двум названиям бренда, например «arcteryx» и «始祖鸟»)
+        self._send_lock = asyncio.Lock()
         # Чтобы один и тот же бренд не проверялся двумя задачами одновременно
         self._locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
         # Статистика с момента запуска (для /stats)
@@ -225,6 +228,14 @@ class Monitor:
     # ------------------------------------------------------------------
 
     async def send_listing(self, user_id: int, listing: Listing, keyword: str, header: str = "🆕") -> None:
+        async with self._send_lock:
+            if await self.db.was_sent(user_id, listing.source, listing.id):
+                return
+            if await self._deliver(user_id, listing, keyword, header):
+                await self.db.mark_sent(user_id, listing.source, listing.id)
+
+    async def _deliver(self, user_id: int, listing: Listing, keyword: str, header: str) -> bool:
+        """Отправляет одно объявление. True — если сообщение дошло."""
         caption = build_caption(
             listing, self.source_titles.get(listing.source, listing.source), keyword, header
         )
@@ -246,18 +257,19 @@ class Monitor:
                     await self.bot.send_message(user_id, caption, reply_markup=keyboard)
                 self.messages_sent += 1
                 await asyncio.sleep(0.1)  # не спамим Telegram слишком быстро
-                return
+                return True
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
             except TelegramForbiddenError:
                 # Пользователь заблокировал бота — ставим его на паузу
                 log.info("Пользователь %s заблокировал бота — пауза", user_id)
                 await self.db.set_paused(user_id, True)
-                return
+                return False
             except Exception as e:
                 log.warning("Не удалось отправить объявление %s пользователю %s: %s",
                             listing.id, user_id, e)
-                return
+                return False
+        return False
 
     async def _safe_send_text(self, user_id: int, text: str) -> None:
         try:
