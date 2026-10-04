@@ -120,6 +120,12 @@ def _price(value, name: str) -> float | None:
 # Карточка объявления
 # ----------------------------------------------------------------------
 
+def _images(data: dict) -> list[str]:
+    detail = data.get("detail") if isinstance(data.get("detail"), dict) else {}
+    images = [i for i in (detail.get("images") or []) if isinstance(i, str) and i.startswith("http")]
+    return images[:9] or ([data["image"]] if data.get("image") else [])
+
+
 def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
          found_at: int | None = None, grp: str | None = None, seen: bool = True) -> dict:
     title = data.get("title") or ""
@@ -153,6 +159,9 @@ def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
         "fav": bool(fav),
         "seen": bool(seen),
         "status": data.get("status") or None,   # sold / gone — вещь уже продана или снята
+        # Все фото объявления — если полная карточка уже загружалась (легит-чек или «Все фото»)
+        "images": _images(data),
+        "photos_loaded": isinstance(data.get("detail"), dict) and bool(data.get("detail")),
         "legit": {"score": legit.get("score"), "verdict": legit.get("verdict")} if isinstance(legit, dict) else None,
     }
 
@@ -395,7 +404,21 @@ async def api_legit(request: web.Request) -> web.Response:
         raise ApiError(429, "limit")
     data = res.pop("data", None) or {}
     res["status"] = data.get("status") or None
+    res["images"] = _images(data)   # легит-чек загрузил все фото — приложение покажет галерею
     return web.json_response(res)
+
+
+async def api_photos(request: web.Request) -> web.Response:
+    """Все фото объявления: один раз грузим полную карточку с Goofish и запоминаем."""
+    source, item_id = await _item_args(request)
+    db = request.app[DB]
+    found = await db.get_listing(source, item_id)
+    if not found:
+        raise ApiError(404, "not_found")
+    keyword, data = found
+    await services.enrich(db, request.app[SOURCES], keyword, source, item_id, data)
+    keyword, data = await db.get_listing(source, item_id)
+    return web.json_response({"images": _images(data), "status": data.get("status") or None})
 
 
 async def api_plans(request: web.Request) -> web.Response:
@@ -518,6 +541,7 @@ def create_app(db, bot, monitor, avito, sources: dict) -> web.Application:
     r.add_delete("/api/brands/{id}", api_brand_delete)
     r.add_post("/api/profit", api_profit)
     r.add_post("/api/legit", api_legit)
+    r.add_post("/api/photos", api_photos)
     r.add_get("/api/plans", api_plans)
     r.add_post("/api/invoice", api_invoice)
     r.add_post("/api/trial", api_trial)

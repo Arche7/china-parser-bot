@@ -24,7 +24,7 @@ BANNER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 
 
 async def home_screen(db: Database, user_id: int, first_name: str | None = None):
-    """Главная: 3 короткие строки и 5 кнопок. Остальное — в «Ещё»."""
+    """Главная: тариф, бренды, сколько нового, как приходят уведомления — и все разделы кнопками."""
     user = await db.get_user(user_id)
     plan = await user_plan(db, user_id)
     watches = await db.list_watches(user_id)
@@ -32,40 +32,52 @@ async def home_screen(db: Database, user_id: int, first_name: str | None = None)
     settings = await db.get_settings(user_id)
     since = now() - config.FEED_DAYS * 86400
     new_count = await db.feed_count(user_id, since=since, view="new")
+    feed_total = await db.feed_count(user_id, since=since)
+    favs = len(await db.list_favorites(user_id, limit=500))
     paused = bool(user and user["paused"])
 
+    lines = [f"<b>{esc(config.BRAND_NAME)}</b>"]
     if is_admin(user_id):
-        status = "админ"
+        lines.append("<i>Админ · без ограничений</i>")
     elif has_access:
-        status = f"{esc(plan.title)} до {human_date(user['sub_until'])}"
+        lines.append(f"<i>{esc(plan.title)} · до {human_date(user['sub_until'])}</i>")
     else:
-        status = "доступа нет"
-    lines = [f"<b>{esc(config.BRAND_NAME)}</b> · <i>{status}</i>"]
+        lines.append("<i>Доступа нет — радар выключен</i>")
+    lines.append("")
     if watches:
         active = [w for w in watches if not w["paused"]]
         intervals = sorted({watch_interval({"is_admin": is_admin(user_id), "plan": plan.code,
                                              "keyword": w["keyword"]}) for w in active}) or [plan.interval_min]
         every = f"{intervals[0]}" if len(intervals) == 1 else f"{intervals[0]}–{intervals[-1]}"
-        lines.append(f"🎯 {len(watches)} {plural(len(watches), 'бренд', 'бренда', 'брендов')} · каждые {every} мин")
+        paused_n = len(watches) - len(active)
+        lines.append(f"🎯 {len(watches)} {plural(len(watches), 'бренд', 'бренда', 'брендов')} · проверка каждые {every} мин"
+                     + (f" · на паузе {paused_n}" if paused_n else ""))
     else:
-        lines.append("🎯 Брендов пока нет — добавь первый")
+        lines.append("🎯 Брендов пока нет — добавь первый, и радар начнёт искать")
+    lines.append(f"🆕 {new_count} {plural(new_count, 'новая', 'новые', 'новых')} · всего в ленте {feed_total} "
+                 f"за {config.FEED_DAYS} {plural(config.FEED_DAYS, 'день', 'дня', 'дней')}")
     mode = settings.get("notify", "digest")
     if paused:
-        notif = "⏸ пауза"
+        lines.append("⏸ Пауза — ничего не присылаю")
     elif mode == "digest":
-        notif = f"сводка раз в {settings.get('every', 30)} мин"
+        lines.append(f"🔔 Сводка раз в {settings.get('every', 30)} мин")
     elif mode == "instant":
-        notif = "каждая сразу"
+        lines.append("🔔 Каждая находка сразу")
     else:
-        notif = "без уведомлений"
-    lines.append(f"🆕 {new_count} {plural(new_count, 'новая', 'новые', 'новых')} · {notif}")
+        lines.append("🔕 Без уведомлений — всё в ленте")
+    if favs:
+        lines.append(f"⭐ В избранном: {favs}")
+    lines.append(f"\n<i>1 ¥ = {rates.cny_rub():.2f} ₽ · {rates.source_label()}</i>")
 
     rows = []
     if webapp_button():
         rows.append([webapp_button()])
+    feed_label = f"📰 Лента · {new_count} {plural(new_count, 'новая', 'новые', 'новых')}" if new_count else "📰 Лента"
     rows += [
-        [btn(f"📰 Лента · {new_count}" if new_count else "📰 Лента", "fd:v:all:-:0"), btn("🎯 Бренды", "b:list")],
-        [btn("⭐ Избранное", "f:list"), btn("⋯ Ещё", "h:more")],
+        [btn(feed_label, "fd:v:all:-:0")],
+        [btn("🎯 Бренды", "b:list"), btn(f"⭐ Избранное · {favs}" if favs else "⭐ Избранное", "f:list")],
+        [btn("🔔 Уведомления", "nt:open"), btn("⚙️ Настройки", "st:open")],
+        [btn("💎 Тариф", "pl:open"), btn("❓ Помощь", "h:help")],
     ]
     if not has_access:
         rows = [[btn("🎁 Попробовать бесплатно", "trial")] if user and not user["trial_used"] and config.TRIAL_DAYS

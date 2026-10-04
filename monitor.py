@@ -96,7 +96,7 @@ def watch_interval(watch) -> int:
     plan = plans.ADMIN if watch["is_admin"] else plans.get_plan(watch["plan"])
     interval = plan.interval_min
     if not brands.is_catalog(watch["keyword"]):
-        interval = max(interval, plans.OWN_BRAND_INTERVAL_MIN)
+        interval = max(interval, plan.own_interval_min)
     return max(interval, config.CHECK_INTERVAL_MIN)
 
 
@@ -416,23 +416,32 @@ class Monitor:
                 unseen = await self.db.feed_page(user_id, since=int(now) - config.FEED_DAYS * 86400,
                                                  view="new", limit=200)
                 have = {(r["source"], r["item_id"]) for r in pending}
-                pending = list(pending) + [r for r in unseen if (r["source"], r["item_id"]) not in have]
-            sent_id = await self._send_digest(user_id, pending, settings)
+                extra = [r for r in unseen if (r["source"], r["item_id"]) not in have]
+                pending = list(pending) + extra
+            else:
+                extra = []
+            sent_id = await self._send_digest(user_id, pending, settings, merged=bool(extra))
             if sent_id:
                 await self.db.mark_notified(user_id)
                 await self.db.update_settings(user_id, last_digest=int(now), digest_msg=sent_id)
                 self.forget_settings(user_id)
 
-    async def _send_digest(self, user_id: int, pending: list, settings: dict) -> int | None:
+    async def _send_digest(self, user_id: int, pending: list, settings: dict, merged: bool = False) -> int | None:
         """Отправляет сводку. Возвращает id сообщения (None — не дошло)."""
         from cards import digest_caption, digest_keyboard  # здесь, чтобы не было циклического импорта
         top = None
-        for row in pending:
+        cheapest = None
+        for row in pending[:200]:
             found = await self.db.get_listing(row["source"], row["item_id"])
-            if found and found[1].get("image"):
-                top = found[1]
-                break
-        caption = digest_caption(pending, every_min=int(settings.get("every") or 30))
+            if not found:
+                continue
+            data = found[1]
+            if top is None and data.get("image"):
+                top = data
+            if data.get("price") is not None and (cheapest is None or data["price"] < cheapest["price"]):
+                cheapest = {"price": data["price"], "keyword": found[0]}
+        caption = digest_caption(pending, every_min=None if merged else int(settings.get("every") or 30),
+                                 cheapest=cheapest)
         markup = digest_keyboard(pending)
         silent = bool(settings.get("quiet")) and is_quiet_now()
         try:

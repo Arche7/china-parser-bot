@@ -164,8 +164,10 @@ async def cmd_avitotest(message: Message, command: CommandObject, avito: AvitoPr
         await message.answer(f"✅ Работает: {market['count']} цен, медиана {market['median']:.0f} ₽ "
                              f"({market['p25']:.0f}–{market['p75']:.0f} ₽)\n{market['url']}")
     else:
-        await message.answer(f"⚠️ Цен не получил (нашлось: {(market or {}).get('count', 0)}). "
-                             "Загляни в логи Railway — там видно ответ актора.")
+        tail = html.escape(" \n".join((avito.last_log or "").strip().splitlines()[-12:]))[-3000:]
+        await message.answer(f"⚠️ Цен не получил (нашлось: {(market or {}).get('count', 0)}).\n\n"
+                             + (f"<b>Конец лога актора:</b>\n<pre>{tail}</pre>" if tail else
+                                "Актор ничего не написал в лог — загляни в логи Railway."))
 
 
 @router.message(Command("broadcast"))

@@ -123,7 +123,8 @@ input{font-family:inherit}
 .gp{display:flex;align-items:baseline;gap:6px;margin:1px 4px 4px;white-space:nowrap;overflow:hidden}
 .gp .cny{font-size:14px}.gp .rub{font-size:11px}
 .dsec{display:flex;flex-direction:column;gap:8px}
-.dayh{position:sticky;top:-18px;z-index:3;margin:0 -18px -2px;padding:10px 18px 8px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:linear-gradient(var(--bg) 72%,rgba(7,8,10,0))}
+.dayh{position:sticky;top:8px;z-index:3;align-self:flex-start;width:max-content;margin:2px 0 -2px;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--soft);background:rgba(14,16,14,.78);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);box-shadow:0 6px 18px rgba(0,0,0,.35)}
+.dayh b{color:var(--lime)}
 .dayh b{color:var(--soft)}
 .fsum{font-size:13px;color:var(--muted);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fsum b{color:var(--lime);font-weight:800}
@@ -175,6 +176,16 @@ input{font-family:inherit}
 .photo{position:relative;height:250px;border-radius:24px;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .photo .tag{position:absolute;left:12px;bottom:12px;font-size:12px;font-weight:700;padding:6px 10px;border-radius:10px;background:rgba(0,0,0,.5)}
 .photo .fav{position:absolute;right:12px;top:12px;background:rgba(0,0,0,.45);z-index:1}
+.photo.gal{height:300px;background:#0c0d0c}
+.gtrack{position:absolute;inset:0;display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+.gtrack::-webkit-scrollbar{display:none}
+.gslide{position:relative;flex:0 0 100%;height:100%;scroll-snap-align:center;scroll-snap-stop:always}
+.photo .gslide img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.gdots{position:absolute;left:0;right:0;bottom:14px;display:flex;justify-content:center;gap:5px;pointer-events:none}
+.gdots i{width:6px;height:6px;border-radius:3px;background:rgba(255,255,255,.35);transition:width .25s,background .25s}
+.gdots i.on{width:16px;background:var(--lime)}
+.photo .gmore{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.18);color:var(--text);z-index:1;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.photo .gmore:disabled{opacity:.7}
 .sbrand{font-family:var(--display);font-weight:700;font-size:22px}
 .orig{margin-top:8px;font-size:13px;color:var(--muted)}
 .orig summary{cursor:pointer;font-weight:700;list-style:none;display:inline-flex;align-items:center;gap:6px;min-height:32px}
@@ -220,6 +231,11 @@ input{font-family:inherit}
 .seg.two .ind{width:calc((100% - 8px)/2)}
 .seg button{flex:1;min-width:0;height:40px;position:relative;font-weight:700;font-size:13px;color:var(--muted2);background:none;border-radius:12px;white-space:nowrap;padding:0 4px}
 .seg button.on{color:var(--lime)}
+.nexpl{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.nrow{font-size:13px;line-height:1.45;color:var(--muted);padding:8px 10px;border-radius:12px;border:1px solid transparent;transition:background .25s,border-color .25s,color .25s}
+.nrow b{color:var(--soft)}
+.nrow.on{color:var(--soft);background:rgba(212,255,58,.06);border-color:rgba(212,255,58,.22)}
+.nrow.on b{color:var(--lime)}
 .stepper{display:flex;align-items:center;gap:6px}
 .stepper button{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.08);font-size:20px;font-weight:700}
 .stepper output{min-width:86px;text-align:center;font-family:var(--display);font-weight:700;font-size:15px}
@@ -687,13 +703,47 @@ function openItem(k) {
   const it = S.items[k]; if (!it) return;
   openSheet(itemHTML(k), 'item');
 }
+function galleryHTML(k) {
+  const it = S.items[k], st = ist(k);
+  const imgs = (it.images && it.images.length) ? it.images : (it.image ? [it.image] : []);
+  const favBtn = `<button class="icon-btn fav press" data-act="fav" data-key="${esc(k)}" aria-label="${it.fav ? 'Убрать из избранного' : 'В избранное'}" aria-pressed="${!!it.fav}" style="color:${it.fav ? 'var(--lime)' : 'var(--text)'}">${svg(ICON.favs, 22, 1.8, it.fav ? 'currentColor' : 'none')}</button>`;
+  if (imgs.length > 1) {
+    return `<div class="photo gal"><div class="gtrack" id="gtrack" aria-label="Фото вещи, листай вбок">${imgs.map((src, i) => `<div class="gslide"><img src="${esc(src)}" alt="Фото ${i + 1}" loading="${i < 2 ? 'eager' : 'lazy'}" decoding="async" referrerpolicy="no-referrer" onerror="this.parentNode.remove()"></div>`).join('')}</div>
+      <div class="gdots" id="gdots" aria-hidden="true">${imgs.map((_, i) => `<i${i ? '' : ' class="on"'}></i>`).join('')}</div>
+      <div class="tag" id="gcount">1 / ${imgs.length}</div>${favBtn}</div>`;
+  }
+  const more = !it.photos_loaded && it.image
+    ? `<button class="tag press gmore" data-act="photos" data-key="${esc(k)}"${st.ploading ? ' disabled' : ''}>${st.ploading ? 'Загружаю фото…' : svg('M4 7h3l2-2h6l2 2h3v12H4z M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8', 15, 1.8) + ' Все фото'}</button>`
+    : `<div class="tag">Фото с Goofish</div>`;
+  return `${thumbHTML(it, 'photo', true)}${more}${favBtn}</div>`;
+}
+function rerenderGallery(k) { const b = $('galBox'); if (b && S.sheet && S.sheet.name === 'item' && S.sheet.key === k) b.innerHTML = galleryHTML(k); }
+async function loadPhotos(k) {
+  const it = S.items[k], st = ist(k);
+  if (!it || st.ploading) return;
+  st.ploading = true; rerenderGallery(k);
+  try {
+    const r = await api('/api/photos', { method: 'POST', body: { source: it.source, item_id: it.item_id } });
+    it.images = r.images || []; it.photos_loaded = true;
+    if (r.status) { it.status = r.status; const sb = $('statusBox'); if (sb) sb.innerHTML = statusBanner(it); }
+    if (it.images.length <= 1) toast('У этого объявления одно фото');
+    hapticNote('success');
+  } catch (e) { fail(e); }
+  st.ploading = false; rerenderGallery(k);
+}
+document.addEventListener('scroll', e => {
+  const t = e.target;
+  if (!t || t.id !== 'gtrack') return;
+  const i = Math.round(t.scrollLeft / Math.max(1, t.clientWidth));
+  const c = $('gcount'); if (c) c.textContent = `${i + 1} / ${t.children.length}`;
+  const d = $('gdots'); if (d) [...d.children].forEach((x, j) => x.classList.toggle('on', j === i));
+}, true);
 function itemHTML(k) {
   const it = S.items[k], st = ist(k);
   const pills = [it.size && 'Размер ' + it.size, it.condition, it.color, it.category].filter(Boolean)
     .concat(it.notes || []).map(p => `<span class="pill" style="font-size:13px;padding:7px 10px;border-radius:10px">${esc(p)}</span>`).join('');
   const where = [it.city, it.ago].filter(Boolean).join(' · ');
-  return `${thumbHTML(it, 'photo', true)}<div class="tag">Фото с Goofish</div>
-      <button class="icon-btn fav press" data-act="fav" data-key="${esc(k)}" aria-label="${it.fav ? 'Убрать из избранного' : 'В избранное'}" aria-pressed="${!!it.fav}" style="color:${it.fav ? 'var(--lime)' : 'var(--text)'}">${svg(ICON.favs, 22, 1.8, it.fav ? 'currentColor' : 'none')}</button></div>
+  return `<div id="galBox">${galleryHTML(k)}</div>
     <div id="statusBox">${statusBanner(it)}</div>
     <div class="between" style="align-items:baseline;margin-top:16px"><div class="sbrand">${esc(it.brand)}</div><div class="sub" style="text-align:right">${esc(where)}</div></div>
     <div style="color:var(--soft);margin-top:4px;line-height:1.4">${esc(it.title)}</div>
@@ -798,6 +848,7 @@ async function runLegit(k) {
     st.legit = await api('/api/legit', { method: 'POST', body: { source: it.source, item_id: it.item_id } });
     st.lstate = 'done'; hapticNote('success');
     if (st.legit.result) { it.legit = { score: st.legit.result.score, verdict: st.legit.result.verdict }; }
+    if (st.legit.images && st.legit.images.length > (it.images || []).length) { it.images = st.legit.images; it.photos_loaded = true; rerenderGallery(k); }
     if (!S.sheet || S.sheet.key !== k) toast('Легит-чек готов — открой карточку');
   } catch (e) {
     st.lstate = e.status === 429 ? 'limit' : e.status === 503 ? 'off' : 'idle';
@@ -981,7 +1032,11 @@ function profileScreen() {
       <div class="seg" role="radiogroup" aria-label="Как присылать находки"><div class="ind" style="transform:translateX(${mi * 100}%)"></div>
         ${modes.map(([v, l]) => `<button class="press${s.notify === v ? ' on' : ''}" role="radio" aria-checked="${s.notify === v}" data-act="notify" data-v="${v}">${l}</button>`).join('')}</div>
       ${s.notify === 'digest' ? `<div class="label" style="margin-top:14px">Сводка раз в</div><div class="wrapchips">${[15, 30, 60, 180].map(n => `<button class="chip press${s.every === n ? ' on' : ''}" data-act="every" data-v="${n}">${n < 60 ? n + ' мин' : n / 60 + ' ч'}</button>`).join('')}</div>` : ''}
-      <div class="foot">${s.notify === 'off' ? 'Бот молчит, всё копится в ленте приложения.' : s.notify === 'instant' ? 'Каждая находка — отдельным сообщением.' : 'Находки приходят одним сообщением.'}</div>
+      <div class="nexpl">${[
+        ['digest', 'Сводкой', `раз в ${s.every || 30} мин приходит одно сообщение: «12 новых · LV 5 · Gucci 4». Листаешь находки прямо в нём. Лучший вариант, если брендов много.`],
+        ['instant', 'Сразу', 'каждая находка приходит отдельным сообщением в ту же минуту, как радар её поймал. Быстрее всех, но сообщений много.'],
+        ['off', 'Только лента', 'в чат ничего не приходит. Все находки копятся здесь, во вкладке «Лента» — смотришь, когда удобно.'],
+      ].map(([v, t, d]) => `<div class="nrow${s.notify === v ? ' on' : ''}"><b>${t}</b> — ${d}</div>`).join('')}</div>
       <div class="between" style="margin-top:12px"><div><div style="font-weight:700">Тихие часы</div><div class="sub" style="font-weight:500">00:00–08:00 без звука</div></div><div class="swwrap"><button class="switch press" role="switch" aria-checked="${!!s.quiet}" aria-label="Тихие часы" data-act="quiet"></button></div></div>
       <div class="between" style="margin-top:4px"><div><div style="font-weight:700">Пауза радара</div><div class="sub" style="font-weight:500">Не искать новые вещи</div></div><div class="swwrap"><button class="switch press" role="switch" aria-checked="${!!me.paused}" aria-label="Пауза радара" data-act="pause"></button></div></div>
     </div>
@@ -1088,6 +1143,7 @@ const ACT = {
   link: el => openLink(el.dataset.url),
   profit: el => runProfit(el.dataset.key),
   legit: el => runLegit(el.dataset.key),
+  photos: el => loadPhotos(el.dataset.key),
   phrases: el => { const st = ist(el.dataset.key); st.phrases = !st.phrases; el.setAttribute('aria-expanded', st.phrases); $('phrasesBox').innerHTML = st.phrases ? phrasesHTML() : ''; if (st.phrases) $('phrasesBox').scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'nearest' }); },
   copy: async el => { const p = PHRASES[+el.dataset.i]; await copyText(p[0]); hapticNote('success'); toast(p[0] + ' — скопировано'); },
   toPlans: () => { closeSheet(); goTab('profile'); setTimeout(() => { const h = [...document.querySelectorAll('#view h2')].pop(); if (h) h.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' }); }, 450); },

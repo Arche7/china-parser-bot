@@ -130,14 +130,14 @@ def build_card(data: dict, keyword: str, settings: dict, header: str = "🆕") -
 def card_keyboard(source: str, item_id: str, url: str, is_fav: bool = False) -> InlineKeyboardMarkup:
     ref = f"{source}:{item_id}"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Открыть на Goofish ↗", url=url)],
         [
-            InlineKeyboardButton(text="🛡 Легит", callback_data=f"l:lg:{ref}"),
+            InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
             InlineKeyboardButton(text="📊 Выгода", callback_data=f"l:pr:{ref}"),
-            InlineKeyboardButton(text="★" if is_fav else "☆", callback_data=f"l:fv:{ref}"),
         ],
         [
-            InlineKeyboardButton(text="Goofish ↗", url=url),
-            InlineKeyboardButton(text="💬 Продавцу", callback_data=f"l:ph:{ref}"),
+            InlineKeyboardButton(text="★ В избранном" if is_fav else "☆ В избранное", callback_data=f"l:fv:{ref}"),
+            InlineKeyboardButton(text="💬 Фразы продавцу", callback_data=f"l:ph:{ref}"),
         ],
     ])
 
@@ -284,43 +284,73 @@ def _word(total: int) -> str:
     return "новых находок"
 
 
-def digest_caption(pending: list, every_min: int) -> str:
-    """Короткая сводка: 2 строки, без лишнего."""
+def digest_caption(pending: list, every_min: int | None, cheapest: dict | None = None) -> str:
+    """
+    🆕 12 новых находок · за 30 мин
+    Louis Vuitton 5 · Gucci 4 · ещё 3
+    Сумки 6 · Одежда 4 · Обувь 2
+    💰 самая дешёвая — ¥680 ≈ 8 430 ₽ (Stone Island)
+    """
     from collections import Counter
     total = len(pending)
     by_brand = Counter(r["keyword"] for r in pending)
-    top = _top(by_brand, 3)
+    by_group = Counter(r["grp"] for r in pending)
+    top = _top(by_brand, 4)
     brands_line = " · ".join(f"{html.escape(brands.display_name(k))} {n}" for k, n in top)
     rest = total - sum(n for _, n in top)
     if rest > 0:
-        brands_line += f" · +{rest}"
-    return f"🆕 <b>{total} {_word(total)}</b>\n{brands_line}"
+        brands_line += f" · ещё {rest}"
+    groups_line = " · ".join(f"{g} {n}" for g, n in _top(by_group, 4))
+    head = f"🆕 <b>{total} {_word(total)}</b>"
+    if every_min:
+        head += f" · за {every_min} мин" if every_min < 60 else f" · за {every_min // 60} ч"
+    lines = [head, "", brands_line, groups_line]
+    if cheapest and cheapest.get("price") is not None:
+        rub = cheapest["price"] * rates.cny_rub()
+        lines.append(f"💰 самая дешёвая — ¥{money(cheapest['price'])} ≈ {money(rub)} ₽ "
+                     f"({html.escape(brands.display_name(cheapest['keyword']))})")
+    lines += ["", "<i>Листай прямо здесь — все сразу или по брендам и разделам.</i>"]
+    return "\n".join(lines)
 
 
 def digest_keyboard(pending: list) -> InlineKeyboardMarkup:
+    from collections import Counter
     from handlers.common import webapp_button  # здесь, чтобы не было циклического импорта
-    rows = [[InlineKeyboardButton(text=f"▶️ Смотреть · {len(pending)}", callback_data="fd:v:all:-:0"),
-             InlineKeyboardButton(text="🗂 Фильтр", callback_data="fd:m:all:-:0")]]
-    app = webapp_button("Открыть в HUNTR")
+    by_brand = Counter(r["keyword"] for r in pending)
+    by_group = Counter(r["grp"] for r in pending)
+    rows = [[InlineKeyboardButton(text=f"▶️ Смотреть все · {len(pending)}", callback_data="fd:v:all:-:0")]]
+    chips = [InlineKeyboardButton(text=f"{brands.display_name(k)[:18]} · {n}", callback_data=f"fd:v:b:{brand_code(k)}:0")
+             for k, n in _top(by_brand, 4)]
+    if len(chips) > 1:
+        rows += [chips[i:i + 2] for i in range(0, len(chips), 2)]
+    groups = [InlineKeyboardButton(text=f"{g} · {n}", callback_data=f"fd:v:g:{g}:0") for g, n in _top(by_group, 3)]
+    if len(groups) > 1:
+        rows.append(groups)
+    last = [InlineKeyboardButton(text="🔔 Как часто", callback_data="nt:open")]
+    app = webapp_button("В приложении")
     if app:
-        rows.append([app])
+        last.insert(0, app)
+    rows.append(last)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def viewer_keyboard(item: dict, ftype: str, fval: str, idx: int, total: int) -> InlineKeyboardMarkup:
-    """Просмотрщик: 3 ряда кнопок вместо пяти."""
     ref = f"{item['source']}:{item['item_id']}"
     base = f"fd:v:{ftype}:{fval}:"
-    nav = [InlineKeyboardButton(text="‹" if idx > 0 else " ", callback_data=f"{base}{idx - 1}" if idx > 0 else "noop"),
-           InlineKeyboardButton(text=f"{idx + 1} / {total}", callback_data=f"fd:m:{ftype}:{fval}:0"),
-           InlineKeyboardButton(text="›" if idx < total - 1 else " ",
-                                callback_data=f"{base}{idx + 1}" if idx < total - 1 else "noop")]
+    nav = []
+    if idx > 0:
+        nav.append(InlineKeyboardButton(text="‹ Назад", callback_data=f"{base}{idx - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{idx + 1} из {total}", callback_data=f"fd:m:{ftype}:{fval}:0"))
+    if idx < total - 1:
+        nav.append(InlineKeyboardButton(text="Дальше ›", callback_data=f"{base}{idx + 1}"))
     return InlineKeyboardMarkup(inline_keyboard=[
         nav,
-        [InlineKeyboardButton(text="🛡 Легит", callback_data=f"l:lg:{ref}"),
-         InlineKeyboardButton(text="📊 Выгода", callback_data=f"l:pr:{ref}"),
-         InlineKeyboardButton(text="★" if item["fav"] else "☆", callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
-         InlineKeyboardButton(text="🙈", callback_data=f"fd:h:{ftype}:{fval}:{idx}")],
-        [InlineKeyboardButton(text="Goofish ↗", url=item["data"]["url"]),
-         InlineKeyboardButton(text="✕ Закрыть", callback_data="fd:x")],
+        [InlineKeyboardButton(text="Открыть на Goofish ↗", url=item["data"]["url"])],
+        [InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
+         InlineKeyboardButton(text="📊 Выгода и Авито", callback_data=f"l:pr:{ref}")],
+        [InlineKeyboardButton(text="★ В избранном" if item["fav"] else "☆ В избранное",
+                              callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
+         InlineKeyboardButton(text="🙈 Не интересно", callback_data=f"fd:h:{ftype}:{fval}:{idx}")],
+        [InlineKeyboardButton(text="🗂 Фильтр", callback_data=f"fd:m:{ftype}:{fval}:0"),
+         InlineKeyboardButton(text="‹ Главная", callback_data="h:home")],
     ])

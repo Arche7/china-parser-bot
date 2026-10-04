@@ -94,6 +94,7 @@ class AvitoPrices:
     def __init__(self, db: Database):
         self.db = db
         self.client = ApifyClientAsync(config.APIFY_TOKEN) if config.AVITO_ENABLED else None
+        self.last_log = ""   # хвост лога актора последнего пустого запуска — для /avitotest
 
     @property
     def enabled(self) -> bool:
@@ -116,9 +117,11 @@ class AvitoPrices:
         items: list = []
         # 1-я попытка — жилые прокси РФ (так советует автор актора),
         # 2-я — прокси по умолчанию, если первая ничего не принесла
-        for proxy in ({"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "RU"},
-                      {"useApifyProxy": True, "apifyProxyCountry": "RU"}):
-            items = await self._run(base["url"], proxy, query)
+        residential = {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "RU"}
+        self.last_log = ""
+        # Ссылки в startUrls актёры принимают по-разному: объектами {"url": ...} или строками.
+        for start in ([{"url": base["url"]}], [base["url"]]):
+            items = await self._run(start, residential, query)
             if items:
                 break
 
@@ -140,11 +143,12 @@ class AvitoPrices:
                  f" (пример полей: {sorted(items[0].keys())[:12]})" if items and not prices else "")
         return {**base, **stats}
 
-    async def _run(self, url: str, proxy: dict, query: str) -> list:
+    async def _run(self, start: list, proxy: dict, query: str) -> list:
+        url = start[0]["url"] if isinstance(start[0], dict) else start[0]
         try:
             run = await self.client.actor(config.AVITO_ACTOR_ID).call(
                 run_input={
-                    "startUrls": [{"url": url}],
+                    "startUrls": start,
                     "maxItems": config.AVITO_MAX_ITEMS,
                     "maxPagesPerUrl": 1,
                     "scrapeDetails": False,
@@ -172,8 +176,17 @@ class AvitoPrices:
             return []
         items = page.items if hasattr(page, "items") else page.get("items", [])
         if not items:
-            log.warning("Авито: актор отработал со статусом %s, но объявлений нет («%s», прокси %s)",
-                        status, query, proxy.get("apifyProxyGroups") or "по умолчанию")
+            # Почему пусто — смотрим хвост лога самого актора (видно блокировки, капчу, ошибки ввода)
+            run_id = run.get("id") if isinstance(run, dict) else getattr(run, "id", None)
+            tail = ""
+            if run_id:
+                try:
+                    tail = (await self.client.run(run_id).log().get() or "")[-1500:]
+                except Exception as e:
+                    tail = f"(лог не прочитался: {e})"
+            self.last_log = tail
+            log.warning("Авито: актор отработал со статусом %s, но объявлений нет («%s», %s). Конец лога: %s",
+                        status, query, url, " | ".join(tail.strip().splitlines()[-8:])[:900])
         return [i for i in items if isinstance(i, dict)]
 
     async def close(self) -> None:

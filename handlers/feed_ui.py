@@ -68,7 +68,8 @@ async def show_item(callback: CallbackQuery, db: Database, ftype: str, fval: str
         # Сводку открыли — больше не удаляем её при следующей
         await db.update_settings(user_id, digest_msg=None)
     caption = cards.build_card(item["data"], item["keyword"], settings, header="")
-    caption = f"<i>📰 {label} · {idx + 1} из {total}</i>\n" + caption.lstrip()
+    mark = "🆕 " if not item.get("seen") else ""
+    caption = f"<i>{mark}📰 {label} · {idx + 1} из {total}</i>\n" + caption.lstrip()
     caption = caption[:1020]
     markup = cards.viewer_keyboard(item, ftype, fval, idx, total)
     photo = item["data"].get("image") or FSInputFile(NO_PHOTO)
@@ -181,8 +182,8 @@ async def msg_feed(message: Message, db: Database) -> None:
 
 MODES = {
     "digest": "Сводкой",
-    "instant": "Каждое сразу",
-    "off": "Только в ленте",
+    "instant": "Сразу",
+    "off": "Только лента",
 }
 EVERY = [15, 30, 60, 180]
 
@@ -193,22 +194,30 @@ async def notify_screen(db: Database, user_id: int):
     mode = s.get("notify", "digest")
     every = int(s.get("every") or 30)
     paused = bool(user and user["paused"])
+    every_txt = f"{every} мин" if every < 60 else f"{every // 60} ч"
     explain = {
-        "digest": f"Раз в {every} мин приходит одно сообщение со всеми находками — листаешь их кнопками.",
-        "instant": "Каждая находка приходит отдельным сообщением сразу. Удобно, если брендов немного.",
-        "off": "Ничего не приходит — находки копятся в ленте, смотришь когда удобно.",
-    }[mode]
-    text = (f"🔔 <b>Уведомления</b>\n\n<b>{MODES[mode]}.</b> {explain}"
-            + ("\n\n⏸ <b>Сейчас пауза</b> — радар работает, но ничего не присылает." if paused else "")
-            + f"\n\n🌙 Ночью без звука (00–08 МСК): {'да' if s.get('quiet') else 'нет'}")
-    rows = [[btn(("● " if m == mode else "") + label, f"nt:m:{m}") for m, label in MODES.items()]]
+        "digest": f"раз в {every_txt} приходит <b>одно</b> сообщение: «12 новых · LV 5 · Gucci 4». "
+                  "Листаешь находки прямо в нём. Лучший вариант, если брендов много.",
+        "instant": "каждая находка приходит <b>отдельным</b> сообщением в ту же минуту, как радар её поймал. "
+                   "Быстрее всего, но сообщений много.",
+        "off": "в чат ничего не приходит. Всё копится в <b>ленте</b> — кнопка «📰 Лента» на главной "
+               "и приложение HUNTR. Смотришь, когда удобно.",
+    }
+    lines = ["🔔 <b>Уведомления</b>", "", "Как бот сообщает о новых находках:", ""]
+    for m, label in MODES.items():
+        lines.append(f"{'✅' if m == mode else '▫️'} <b>{label}</b> — {explain[m]}")
+        lines.append("")
+    if paused:
+        lines.append("⏸ <b>Сейчас пауза</b> — радар не ищет и ничего не присылает.\n")
+    lines.append(f"🌙 Ночью без звука (00–08 МСК): {'да' if s.get('quiet') else 'нет'}")
+    rows = [[btn(("✅ " if m == mode else "") + label, f"nt:m:{m}") for m, label in MODES.items()]]
     if mode == "digest":
         rows.append([btn(("● " if e == every else "") + (f"{e} мин" if e < 60 else f"{e // 60} ч"), f"nt:e:{e}")
                      for e in EVERY])
     rows.append([btn("🌙 Ночью без звука: " + ("вкл" if s.get("quiet") else "выкл"), "nt:q")])
     rows.append([btn("▶️ Снять с паузы" if paused else "⏸ Пауза", "nt:p")])
     rows.append(back_home())
-    return text, kb(*rows)
+    return "\n".join(lines), kb(*rows)
 
 
 @router.callback_query(F.data.startswith("nt:"))
