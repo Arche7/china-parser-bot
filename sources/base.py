@@ -32,8 +32,19 @@ class Source:
     title: str = "Base"         # красивое название для сообщений
     enabled: bool = False       # участвует ли площадка в мониторинге
 
-    async def search(self, keyword: str, max_items: int) -> list[Listing]:
-        """Вернуть самые свежие объявления по запросу."""
+    async def search(
+        self,
+        keyword: str,
+        max_items: int,
+        price_min: float | None = None,
+        price_max: float | None = None,
+    ) -> list[Listing]:
+        """
+        Вернуть самые свежие объявления по запросу.
+        price_min / price_max — фильтр цены в юанях. Если площадка умеет
+        фильтровать сама — передай их ей (так дешевле). Если не умеет —
+        можно игнорировать: монитор всё равно проверит цену сам.
+        """
         raise NotImplementedError
 
     async def close(self) -> None:

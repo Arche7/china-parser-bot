@@ -4,6 +4,7 @@
 Команды для пользователя:
   /start  — приветствие и меню
   /add    — добавить бренд:  /add stone island 500-3000
+  /preset — добавить готовый набор брендов (см. brands.py)
   /list   — мои бренды (с кнопками удаления)
   /del    — удалить бренд:   /del stone island
   /pause  — поставить уведомления на паузу
@@ -39,6 +40,7 @@ from aiogram.types import (
     TelegramObject,
 )
 
+import brands
 import config
 from brands_cn import chinese_name
 from db import Database
@@ -52,6 +54,7 @@ _background_tasks: set[asyncio.Task] = set()
 # Тексты кнопок главного меню
 BTN_ADD = "➕ Добавить бренд"
 BTN_LIST = "📋 Мои бренды"
+BTN_PRESET = "⭐ Готовый набор"
 BTN_PAUSE = "⏸ Пауза"
 BTN_RESUME = "▶️ Продолжить"
 BTN_HELP = "ℹ️ Помощь"
@@ -60,6 +63,7 @@ BTN_CANCEL = "✖️ Отмена"
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_LIST)],
+        [KeyboardButton(text=BTN_PRESET)],
         [KeyboardButton(text=BTN_PAUSE), KeyboardButton(text=BTN_RESUME)],
         [KeyboardButton(text=BTN_HELP)],
     ],
@@ -74,7 +78,12 @@ CANCEL_MENU = ReplyKeyboardMarkup(
 PUBLIC_COMMANDS = {"/start", "/help", "/id"}
 PUBLIC_BUTTONS = {BTN_HELP}
 # Кнопки меню — их нельзя принять за название бренда
-MENU_BUTTONS = {BTN_ADD, BTN_LIST, BTN_PAUSE, BTN_RESUME, BTN_HELP, BTN_CANCEL}
+MENU_BUTTONS = {BTN_ADD, BTN_LIST, BTN_PRESET, BTN_PAUSE, BTN_RESUME, BTN_HELP, BTN_CANCEL}
+
+
+def _preset_names() -> str:
+    return ", ".join(brands.BRANDS[key]["title"] for key in brands.PRESET)
+
 
 HELP_TEXT = (
     "🤖 <b>Я слежу за объявлениями на китайских площадках</b>\n\n"
@@ -83,6 +92,9 @@ HELP_TEXT = (
     "<b>Как добавить бренд:</b>\n"
     "• нажми «➕ Добавить бренд» и напиши название, или\n"
     "• команда <code>/add stone island</code>\n\n"
+    "<b>Готовый набор:</b> кнопка «⭐ Готовый набор» или /preset — сразу "
+    f"добавит {_preset_names()} с ценой "
+    f"{brands.PRESET_PRICE_MIN}–{brands.PRESET_PRICE_MAX} ¥.\n\n"
     "<b>Фильтр по цене (в юанях ¥):</b>\n"
     "• <code>/add arcteryx 500-3000</code> — от 500 до 3000 ¥\n"
     "• <code>/add chrome hearts -2000</code> — до 2000 ¥\n"
@@ -92,11 +104,12 @@ HELP_TEXT = (
     "/del название — удалить бренд\n"
     "/pause и /resume — пауза уведомлений\n"
     "/id — мой Telegram ID\n\n"
-    "🇨🇳 <b>Китайские названия:</b> Goofish — китайский сайт, и продавцы часто "
-    "пишут бренд иероглифами. Если я знаю китайское название бренда "
-    "(например, <code>始祖鸟</code> для Arc'teryx), то сам предложу добавить и его. "
-    "Можно добавить и вручную: <code>/add 始祖鸟</code>. Одно и то же объявление "
-    "дважды не придёт.\n\n"
+    "🇨🇳 <b>Написания и китайские названия:</b> для брендов из готового "
+    "набора я сам ищу и по латинице, и по-китайски (например, <code>gucci</code> "
+    "и <code>古驰</code>), понимаю сокращения (<code>lv</code>, <code>ysl</code>) "
+    "и отсеиваю пометки подделок (高仿, 复刻, A货 …). Для других брендов, если я "
+    "знаю китайское название, предложу добавить и его. "
+    "Одно и то же объявление дважды не придёт.\n\n"
     "Площадки: Goofish (闲鱼) ✅ · 95分 — скоро"
 )
 
@@ -181,22 +194,51 @@ def price_text(price_min: float | None, price_max: float | None) -> str:
     return f"до {price_max:.0f} ¥"
 
 
+def search_text(keyword: str) -> str:
+    """'gucci' -> 'ищу: gucci, 古驰' (только для брендов из brands.py)."""
+    if not brands.get_brand(keyword):
+        return ""
+    return "ищу: " + ", ".join(brands.search_queries(keyword))
+
+
+async def merge_old_variants(db: Database, user_id: int, key: str) -> list[str]:
+    """
+    Если у пользователя уже есть этот бренд в другом написании
+    (например, «古驰», а добавляем «gucci») — удаляем старую запись,
+    чтобы бренд не проверялся дважды. Возвращает удалённые написания.
+    """
+    removed = []
+    for watch in await db.list_watches(user_id):
+        if watch["keyword"] != key and brands.canonical(watch["keyword"]) == key:
+            await db.delete_watch(user_id, watch["id"])
+            removed.append(watch["keyword"])
+    return removed
+
+
 async def build_list(db: Database, user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
     watches = await db.list_watches(user_id)
     if not watches:
         return (
-            "У тебя пока нет брендов. Нажми «➕ Добавить бренд» или напиши "
-            "<code>/add название</code>.",
+            "У тебя пока нет брендов. Нажми «➕ Добавить бренд», «⭐ Готовый набор» "
+            "или напиши <code>/add название</code>.",
             None,
         )
     lines = [f"📋 <b>Твои бренды</b> ({len(watches)}/{config.MAX_BRANDS_PER_USER}):\n"]
     buttons = []
     for i, w in enumerate(watches, start=1):
-        lines.append(
-            f"{i}. <b>{html.escape(w['keyword'])}</b> — {price_text(w['price_min'], w['price_max'])}"
+        line = (
+            f"{i}. <b>{html.escape(brands.display_name(w['keyword']))}</b> — "
+            f"{price_text(w['price_min'], w['price_max'])}"
         )
+        extra = search_text(w["keyword"])
+        if extra:
+            line += f"\n    <i>{html.escape(extra)}</i>"
+        lines.append(line)
         buttons.append(
-            [InlineKeyboardButton(text=f"❌ Удалить «{w['keyword'][:30]}»", callback_data=f"del:{w['id']}")]
+            [InlineKeyboardButton(
+                text=f"❌ Удалить «{brands.display_name(w['keyword'])[:30]}»",
+                callback_data=f"del:{w['id']}",
+            )]
         )
     lines.append(f"\nПроверяю каждые {config.CHECK_INTERVAL_MIN} мин.")
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -213,6 +255,11 @@ async def add_brand(message: Message, db: Database, monitor: Monitor, raw_text: 
         await message.answer("Слишком длинное название — максимум 60 символов.")
         return
 
+    # 'lv', '路易威登', 'Louis Vuitton' -> один бренд 'louis vuitton'
+    keyword = brands.canonical(keyword)
+    known = brands.get_brand(keyword) is not None
+    removed = await merge_old_variants(db, user_id, keyword) if known else []
+
     existing = {w["keyword"] for w in await db.list_watches(user_id)}
     if keyword not in existing and len(existing) >= config.MAX_BRANDS_PER_USER:
         await message.answer(
@@ -221,29 +268,46 @@ async def add_brand(message: Message, db: Database, monitor: Monitor, raw_text: 
         )
         return
 
+    name = html.escape(brands.display_name(keyword))
     is_new = await db.add_watch(user_id, keyword, price_min, price_max)
+    details = ""
+    if known:
+        details = f"\n🔎 {html.escape(search_text(keyword))} + все написания из списка"
+    if removed:
+        details += "\n♻️ Объединил со старыми записями: " + html.escape(", ".join(removed))
+
     if not is_new:
         await message.answer(
-            f"✏️ Бренд <b>{html.escape(keyword)}</b> уже был — обновил фильтр: "
-            f"{price_text(price_min, price_max)}.",
+            f"✏️ Бренд <b>{name}</b> уже был — обновил фильтр: "
+            f"{price_text(price_min, price_max)}.{details}",
             reply_markup=MAIN_MENU,
         )
+        # С новой ценой это новый поиск — сразу запоминаем текущие объявления
+        start_preview(monitor, user_id, keyword, price_min, price_max, show=False)
         return
 
     await message.answer(
-        f"✅ Добавил <b>{html.escape(keyword)}</b> ({price_text(price_min, price_max)}).\n"
+        f"✅ Добавил <b>{name}</b> ({price_text(price_min, price_max)}).{details}\n"
         "Ищу текущие объявления — это может занять до пары минут…",
         reply_markup=MAIN_MENU,
     )
     start_preview(monitor, user_id, keyword, price_min, price_max)
-    await offer_chinese_name(message, db, user_id, keyword)
+    if not known:
+        await offer_chinese_name(message, db, user_id, keyword)
 
 
 def start_preview(
-    monitor: Monitor, user_id: int, keyword: str, price_min: float | None, price_max: float | None
+    monitor: Monitor,
+    user_id: int,
+    keyword: str,
+    price_min: float | None,
+    price_max: float | None,
+    show: bool = True,
 ) -> None:
     """Первый запрос делаем в фоне, чтобы бот не «зависал» на время поиска."""
-    task = asyncio.create_task(monitor.preview_new_keyword(user_id, keyword, price_min, price_max))
+    task = asyncio.create_task(
+        monitor.preview_new_keyword(user_id, keyword, price_min, price_max, show=show)
+    )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -363,6 +427,56 @@ async def got_keyword(message: Message, db: Database, monitor: Monitor, state: F
 
 
 # ----------------------------------------------------------------------
+# Готовый набор брендов
+# ----------------------------------------------------------------------
+
+@router.message(Command("preset"))
+@router.message(F.text == BTN_PRESET)
+async def cmd_preset(message: Message, db: Database, monitor: Monitor, state: FSMContext) -> None:
+    """Добавляет все бренды из brands.PRESET с ценой PRESET_PRICE_MIN–MAX."""
+    await state.clear()
+    user_id = message.from_user.id
+    price_min = float(brands.PRESET_PRICE_MIN)
+    price_max = float(brands.PRESET_PRICE_MAX)
+
+    added, updated, skipped, merged = [], [], [], []
+    for key in brands.PRESET:
+        merged += await merge_old_variants(db, user_id, key)
+        existing = {w["keyword"] for w in await db.list_watches(user_id)}
+        if key not in existing and len(existing) >= config.MAX_BRANDS_PER_USER:
+            skipped.append(brands.display_name(key))
+            continue
+        if await db.add_watch(user_id, key, price_min, price_max):
+            added.append(key)
+        else:
+            updated.append(key)
+        # Молча запоминаем текущие объявления — присылать будем только новые
+        start_preview(monitor, user_id, key, price_min, price_max, show=False)
+
+    lines = [f"⭐ <b>Готовый набор</b> — цена {price_text(price_min, price_max)}\n"]
+    for key in added + updated:
+        mark = "✅" if key in added else "✏️"
+        lines.append(
+            f"{mark} <b>{html.escape(brands.display_name(key))}</b> — "
+            f"<i>{html.escape(search_text(key))}</i>"
+        )
+    if merged:
+        lines.append("\n♻️ Объединил со старыми записями: " + html.escape(", ".join(merged)))
+    if skipped:
+        lines.append(
+            f"\n⚠️ Не влезли (лимит {config.MAX_BRANDS_PER_USER} брендов): "
+            + html.escape(", ".join(skipped))
+            + ". Удали лишнее через /list и нажми кнопку ещё раз."
+        )
+    lines.append(
+        "\nСейчас молча запоминаю текущие объявления, чтобы не засыпать тебя старыми. "
+        f"Новые начнут приходить в течение ~{config.CHECK_INTERVAL_MIN} мин.\n"
+        "Подделки (高仿, 复刻, A货, 1:1 …) и объявления без названия бренда отсеиваю."
+    )
+    await message.answer("\n".join(lines), reply_markup=MAIN_MENU)
+
+
+# ----------------------------------------------------------------------
 # Список и удаление
 # ----------------------------------------------------------------------
 
@@ -382,7 +496,9 @@ async def cb_delete(callback: CallbackQuery, db: Database) -> None:
         await callback.answer()
         return
     keyword = await db.delete_watch(callback.from_user.id, watch_id)
-    await callback.answer(f"Удалил «{keyword}»" if keyword else "Уже удалено")
+    await callback.answer(
+        f"Удалил «{brands.display_name(keyword)}»" if keyword else "Уже удалено"
+    )
     text, keyboard = await build_list(db, callback.from_user.id)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard)
@@ -437,8 +553,13 @@ async def cmd_del(message: Message, command: CommandObject, db: Database) -> Non
         await message.answer("Напиши, что удалить: <code>/del stone island</code>\nИли открой /list.")
         return
     keyword, _, _ = parse_brand_input(command.args)
-    if await db.delete_watch_by_keyword(message.from_user.id, keyword):
-        await message.answer(f"🗑 Удалил <b>{html.escape(keyword)}</b>.")
+    user_id = message.from_user.id
+    # Сначала пробуем как написано, потом — как бренд из списка (/del lv)
+    deleted = await db.delete_watch_by_keyword(user_id, keyword)
+    if not deleted:
+        deleted = await db.delete_watch_by_keyword(user_id, brands.canonical(keyword))
+    if deleted:
+        await message.answer(f"🗑 Удалил <b>{html.escape(brands.display_name(keyword))}</b>.")
     else:
         await message.answer("Такого бренда нет в твоём списке. Проверь /list.")
 
@@ -529,10 +650,11 @@ async def cmd_stats(message: Message, db: Database, monitor: Monitor) -> None:
     if not is_admin(message.from_user.id):
         return
     watches = await db.active_watches()
-    keywords = {w["keyword"] for w in watches}
+    jobs = monitor.group_watches(watches)
+    queries = sum(len(brands.search_queries(keyword)) for keyword, _, _ in jobs)
     sources_count = max(1, len(monitor.sources))
     runs_per_day = (24 * 60) / max(1, config.CHECK_INTERVAL_MIN)
-    items_per_day = len(keywords) * sources_count * runs_per_day * config.MAX_ITEMS
+    items_per_day = queries * sources_count * runs_per_day * config.MAX_ITEMS
     cost_per_day = items_per_day / 1000 * config.APIFY_PRICE_PER_1000
 
     uptime_h = (time.time() - monitor.started_at) / 3600
@@ -542,15 +664,19 @@ async def cmd_stats(message: Message, db: Database, monitor: Monitor) -> None:
     )
     await message.answer(
         "📊 <b>Статистика</b>\n\n"
-        f"Активных брендов (уникальных): {len(keywords)}\n"
+        f"Активных брендов (уникальных): {len(jobs)}\n"
+        f"Поисковых запросов за проверку: {queries}\n"
         f"Подписок на бренды всего: {len(watches)}\n"
         f"Интервал: {config.CHECK_INTERVAL_MIN} мин, объявлений за запрос: {config.MAX_ITEMS}\n\n"
-        f"💸 Примерный расход Apify: ~${cost_per_day:.2f}/день, ~${cost_per_day * 30:.2f}/мес\n"
-        "<i>(без учёта платы за запуск актора — точные цифры смотри в Apify → Billing)</i>\n\n"
+        f"💸 Примерный расход Apify (максимум): ~${cost_per_day:.2f}/день, "
+        f"~${cost_per_day * 30:.2f}/мес\n"
+        "<i>(если по запросу меньше объявлений, чем лимит, — выйдет дешевле; "
+        "точные цифры смотри в Apify → Billing)</i>\n\n"
         f"С момента запуска ({uptime_h:.1f} ч):\n"
         f"• циклов проверки: {monitor.cycles} (последний: {last})\n"
         f"• запросов к площадкам: {monitor.searches}\n"
         f"• получено объявлений: {monitor.items_fetched}\n"
+        f"• отсеяно (подделки/не тот бренд): {monitor.items_filtered}\n"
         f"• отправлено сообщений: {monitor.messages_sent}"
     )
 

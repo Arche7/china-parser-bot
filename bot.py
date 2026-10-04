@@ -37,6 +37,7 @@ async def set_commands(bot: Bot) -> None:
     await bot.set_my_commands([
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="add", description="Добавить бренд"),
+        BotCommand(command="preset", description="Готовый набор брендов"),
         BotCommand(command="list", description="Мои бренды"),
         BotCommand(command="del", description="Удалить бренд"),
         BotCommand(command="pause", description="Пауза уведомлений"),

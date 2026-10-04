@@ -32,7 +32,8 @@
 Как включить, когда search() будет готов:
   1. Реализуй метод search() — он должен вернуть список Listing.
   2. Поставь enabled = True.
-  Больше ничего менять не нужно: монитор сам начнёт опрашивать площадку.
+  Больше ничего менять не нужно: монитор сам начнёт опрашивать площадку
+  (все написания брендов и фильтры подделок из brands.py тоже заработают).
 """
 
 from sources.base import Listing, Source
@@ -43,7 +44,13 @@ class Fen95Source(Source):
     title = "95分"
     enabled = False  # <- поменяй на True, когда search() будет реализован
 
-    async def search(self, keyword: str, max_items: int) -> list[Listing]:
+    async def search(
+        self,
+        keyword: str,
+        max_items: int,
+        price_min: float | None = None,
+        price_max: float | None = None,
+    ) -> list[Listing]:
         raise NotImplementedError(
             "Источник 95分 пока не подключён — см. описание в sources/fen95.py"
         )

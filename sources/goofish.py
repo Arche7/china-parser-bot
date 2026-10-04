@@ -6,8 +6,12 @@ Goofish (闲鱼, Xianyu) — через платный актор на Apify.
 решает это за нас с помощью китайских/гонконгских прокси.
 
 Актор: unitbytes/goofish-xianyu-search-scraper
-Стоимость: примерно $1.6 за 1000 объявлений в режиме "summary"
-(точную цену смотри на странице актора в Apify).
+Стоимость: примерно $1.6 за 1000 объявлений в режиме "summary",
+платы за сам запуск нет (точную цену смотри на странице актора в Apify).
+
+Фильтр цены (priceMin / priceMax) актор умеет применять сам — поэтому
+мы передаём его прямо в запрос: Apify возвращает только объявления
+в нужном диапазоне, и мы не платим за лишние.
 """
 
 import logging
@@ -49,7 +53,13 @@ class GoofishSource(Source):
         self.actor_id = actor_id
         self.proxy_country = proxy_country
 
-    async def search(self, keyword: str, max_items: int) -> list[Listing]:
+    async def search(
+        self,
+        keyword: str,
+        max_items: int,
+        price_min: float | None = None,
+        price_max: float | None = None,
+    ) -> list[Listing]:
         run_input = {
             "keyword": keyword,
             "maxItems": max(1, min(max_items, 1500)),
@@ -61,6 +71,11 @@ class GoofishSource(Source):
                 "apifyProxyCountry": self.proxy_country,
             },
         }
+        # Фильтр цены — прямо на стороне Goofish (актор принимает целые юани)
+        if price_min is not None:
+            run_input["priceMin"] = int(price_min)
+        if price_max is not None:
+            run_input["priceMax"] = int(round(price_max))
 
         # Запускаем актор и ждём, пока он закончит (до 5 минут)
         run = await self.client.actor(self.actor_id).call(
@@ -90,7 +105,10 @@ class GoofishSource(Source):
             listing = self._to_listing(raw)
             if listing:
                 listings.append(listing)
-        log.info("Goofish: «%s» — получено %d объявлений", keyword, len(listings))
+        price_note = ""
+        if price_min is not None or price_max is not None:
+            price_note = f" (цена {price_min or 0:g}–{price_max or '∞'})"
+        log.info("Goofish: «%s»%s — получено %d объявлений", keyword, price_note, len(listings))
         return listings
 
     def _to_listing(self, raw: dict) -> Listing | None:
