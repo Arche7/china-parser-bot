@@ -84,6 +84,18 @@ TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS", "3"))
 # Сколько дней дарим пригласившему, когда друг оплатил подписку
 REFERRAL_BONUS_DAYS: int = int(os.getenv("REFERRAL_BONUS_DAYS", "7"))
 
+# --- Оплата звёздами Telegram ---
+# 1 — кнопки «Оплатить ⭐» работают, 0 — вместо оплаты бот отправляет в поддержку
+PAYMENTS_ENABLED: bool = os.getenv("PAYMENTS_ENABLED", "1").strip() not in ("0", "false", "no", "")
+# Сколько примерно стоит пользователю 1 звезда в рублях (для подсказки «≈ ₽»)
+STAR_RUB_BUY: float = float(os.getenv("STAR_RUB_BUY", "1.35"))
+# Сколько примерно получаешь ты за 1 звезду при выводе, в долларах (для /stats)
+STAR_USD_PAYOUT: float = float(os.getenv("STAR_USD_PAYOUT", "0.013"))
+# Бренды, которые бот один раз сам добавит админам (через запятую)
+ADMIN_SEED_BRANDS: list[str] = [
+    b.strip().lower() for b in os.getenv("ADMIN_SEED_BRANDS", "goyard,tom ford,dior").split(",") if b.strip()
+]
+
 # --- Расписание проверок ---
 # Как часто монитор «просыпается» и смотрит, какие бренды пора проверить.
 # Сам интервал проверки бренда зависит от тарифа (см. plans.py).

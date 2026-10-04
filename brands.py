@@ -147,6 +147,21 @@ BRANDS: dict[str, dict] = {
         "aliases": ["canada goose", "canadagoose", "加拿大鹅"],
         "ru": ["канада гус", "canada goose"],
     },
+    "goyard": {
+        "title": "Goyard",
+        # 狗牙 («собачьи зубы», из-за узора) — народное прозвище Goyard в Китае,
+        # 戈雅 — официальное. Ищем по обоим.
+        "search": ["goyard", "狗牙"],
+        "aliases": ["goyard", "狗牙", "戈雅"],
+        "ru": ["гоярд", "goyard"],
+    },
+    "tom ford": {
+        "title": "Tom Ford",
+        # «TF» специально НЕ добавлен: слишком короткое сочетание
+        "search": ["tom ford", "汤姆福特"],
+        "aliases": ["tom ford", "tomford", "汤姆福特"],
+        "ru": ["том форд", "tom ford"],
+    },
     "bottega veneta": {
         "title": "Bottega Veneta",
         "search": ["bottega", "葆蝶家"],
@@ -159,6 +174,7 @@ BRANDS: dict[str, dict] = {
 # Бренды, которые добавляет «Готовый набор» (в таком порядке)
 PRESET: list[str] = [
     "gucci", "cp company", "stone island", "louis vuitton", "prada", "saint laurent", "burberry",
+    "goyard", "tom ford", "dior",
 ]
 
 # Варианты цены для кнопок при добавлении бренда: (подпись, от, до) в юанях

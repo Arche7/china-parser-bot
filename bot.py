@@ -43,12 +43,43 @@ async def set_profile(bot: Bot) -> None:
         BotCommand(command="add", description="Добавить бренд"),
         BotCommand(command="list", description="Мои бренды"),
         BotCommand(command="help", description="Как это работает"),
+        BotCommand(command="paysupport", description="Вопросы по оплате"),
     ])
+    try:
+        await bot.set_my_name(config.BRAND_NAME)
+    except Exception as e:  # Telegram ограничивает частоту смены имени — не критично
+        log.warning("Не удалось обновить имя бота: %s", e)
     try:
         await bot.set_my_short_description(texts.BOT_SHORT_DESCRIPTION[:120])
         await bot.set_my_description(texts.BOT_DESCRIPTION[:512])
     except Exception as e:  # Telegram ограничивает частоту — не критично
         log.warning("Не удалось обновить описание бота: %s", e)
+
+
+async def seed_admin_brands(db: Database) -> None:
+    """
+    Один раз добавляет админам бренды из ADMIN_SEED_BRANDS (по умолчанию
+    Goyard, Tom Ford, Dior) с ценой «Готового набора». Если потом удалишь
+    бренд — он не вернётся: бот запоминает, что уже добавлял.
+    """
+    import brands
+    for admin_id in config.ADMIN_IDS:
+        if not await db.get_user(admin_id):
+            continue
+        settings = await db.get_settings(admin_id)
+        done = set(settings.get("seeded", []))
+        added = []
+        for keyword in config.ADMIN_SEED_BRANDS:
+            key = brands.canonical(keyword)
+            if key in done:
+                continue
+            if not await db.get_watch_by_keyword(admin_id, key):
+                await db.add_watch(admin_id, key, float(brands.PRESET_PRICE_MIN), float(brands.PRESET_PRICE_MAX))
+                added.append(key)
+            done.add(key)
+        await db.update_settings(admin_id, seeded=sorted(done))
+        if added:
+            log.info("Админу %s добавлены бренды: %s", admin_id, ", ".join(added))
 
 
 async def main() -> None:
@@ -87,6 +118,7 @@ async def main() -> None:
 
     await rates.refresh()
     await set_profile(bot)
+    await seed_admin_brands(db)
     monitor_task = asyncio.create_task(monitor.run_forever())
 
     me = await bot.get_me()

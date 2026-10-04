@@ -6,7 +6,8 @@
   brands_ui.py  — каталог брендов, добавление, бюджет, мои бренды
   listing.py    — кнопки под объявлением, избранное, легит-чек по фото
   settings_ui.py — настройки
-  plans_ui.py   — тарифы и «пригласи друга»
+  plans_ui.py   — тарифы, кнопки оплаты звёздами, «пригласи друга»
+  payments.py   — приём оплаты звёздами, возвраты, /paysupport, /terms
   admin.py      — команды админа
 """
 
@@ -19,11 +20,11 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 import config
 import texts
 from db import Database
-from handlers import admin, brands_ui, home, listing, plans_ui, settings_ui, start
+from handlers import admin, brands_ui, home, listing, payments, plans_ui, settings_ui, start
 from handlers.common import BTN_HOME, btn, kb, trial_days_text
 
 # Что можно делать БЕЗ подписки: познакомиться, посмотреть тарифы, включить пробный период
-PUBLIC_COMMANDS = {"/start", "/help", "/id", "/menu"}
+PUBLIC_COMMANDS = {"/start", "/help", "/id", "/menu", "/paysupport", "/support", "/terms"}
 PUBLIC_TEXT = {BTN_HOME}
 PUBLIC_CALLBACKS = ("ob:", "noop", "trial", "pl:", "h:home", "h:help")
 
@@ -46,6 +47,9 @@ class AccessMiddleware(BaseMiddleware):
         await self.db.upsert_user(user.id, user.username, user.first_name)
 
         if user.id in config.ADMIN_IDS:
+            return await handler(event, data)
+        # Сообщение об оплате звёздами пропускаем всегда — именно оно и включает доступ
+        if isinstance(event, Message) and event.successful_payment:
             return await handler(event, data)
         if isinstance(event, Message) and event.text:
             first = event.text.split()[0].split("@")[0].lower()
@@ -89,7 +93,7 @@ def setup(db: Database) -> Router:
     root.message.outer_middleware(middleware)
     root.callback_query.outer_middleware(middleware)
     # Порядок важен: админ раньше всех, запасной обработчик — последним
-    for r in (admin.router, start.router, home.router, brands_ui.router, listing.router,
+    for r in (admin.router, payments.router, start.router, home.router, brands_ui.router, listing.router,
               settings_ui.router, plans_ui.router, fallback):
         root.include_router(r)
     return root

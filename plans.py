@@ -5,7 +5,9 @@
 сколько брендов можно отслеживать, как часто бот проверяет площадку,
 сколько легит-чеков и сравнений цен входит в месяц.
 
-Цены пока только показываются в боте — оплату подключим позже.
+Оплата — только звёздами Telegram (⭐, валюта XTR): так Telegram требует
+для цифровых товаров. Месяц — подписка с автопродлением (Telegram сам
+списывает звёзды раз в 30 дней), 3 месяца — разовый платёж со скидкой.
 Чтобы поменять цену или лимит, достаточно поправить цифру ниже и
 перезапустить бота.
 
@@ -21,7 +23,8 @@ from dataclasses import dataclass, field
 class Plan:
     code: str                 # как хранится в базе
     title: str                # как видит пользователь
-    price_rub: int            # цена за месяц, ₽ (0 = бесплатно)
+    price_rub: int            # ориентир в рублях (для расчётов и /stats)
+    price_stars: int          # цена за месяц в звёздах Telegram ⭐ (0 = бесплатно)
     brands: int               # сколько брендов всего можно отслеживать
     own_brands: int           # из них «своих» — не из каталога HUNTR
     interval_min: int         # как часто проверять бренды из каталога, минут
@@ -41,6 +44,7 @@ TRIAL = Plan(
     code="trial",
     title="Пробный",
     price_rub=0,
+    price_stars=0,
     brands=3,
     own_brands=0,
     interval_min=30,
@@ -54,6 +58,7 @@ START = Plan(
     code="start",
     title="START",
     price_rub=1490,
+    price_stars=990,
     brands=5,
     own_brands=0,
     interval_min=30,
@@ -73,6 +78,7 @@ PRO = Plan(
     code="pro",
     title="PRO",
     price_rub=3490,
+    price_stars=2490,
     brands=15,
     own_brands=2,
     interval_min=15,
@@ -91,6 +97,7 @@ ELITE = Plan(
     code="elite",
     title="ELITE",
     price_rub=7990,
+    price_stars=5490,
     brands=30,
     own_brands=5,
     interval_min=10,
@@ -112,6 +119,7 @@ ADMIN = Plan(
     code="admin",
     title="ADMIN",
     price_rub=0,
+    price_stars=0,
     brands=100,
     own_brands=100,
     interval_min=10,
@@ -130,6 +138,25 @@ def get_plan(code: str | None) -> Plan:
     if not code:
         return PRO
     return ALL_PLANS.get(code, PRO)
+
+
+# Скидка за оплату сразу на 3 месяца
+QUARTER_DISCOUNT = 0.15
+# Telegram не даёт выставить подписку дороже 10 000 ⭐; разовые счета
+# тоже держим в этих пределах, чтобы не упереться в лимит
+MAX_INVOICE_STARS = 10_000
+SUBSCRIPTION_PERIOD = 2_592_000  # 30 дней в секундах — единственный вариант у Telegram
+
+
+def quarter_stars(plan: "Plan") -> int | None:
+    """Цена за 3 месяца со скидкой, округлённая до 10 ⭐. None — если выходит за лимит."""
+    value = int(round(plan.price_stars * 3 * (1 - QUARTER_DISCOUNT) / 10) * 10)
+    return value if 0 < value <= MAX_INVOICE_STARS else None
+
+
+def stars(amount: int) -> str:
+    """2490 -> '2 490 ⭐'"""
+    return f"{amount:,}".replace(",", " ") + " ⭐"
 
 
 def rub(amount: float) -> str:

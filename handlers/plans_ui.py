@@ -1,13 +1,19 @@
 """
-Тарифы и «пригласи друга».
+Тарифы, оплата звёздами Telegram и «пригласи друга».
 
-Оплаты пока нет: кнопка «Подключить» объясняет, как получить доступ
-через поддержку. Когда подключим оплату (Telegram Stars или другую),
-поменяется только функция cb_plan_buy.
+Как устроена оплата (всё делает сам Telegram, карта и платёжный провайдер не нужны):
+  * «Месяц» — подписка звёздами: Telegram списывает звёзды раз в 30 дней,
+    пока человек не отменит её в настройках Telegram. Бот получает
+    сообщение об оплате каждый месяц и продлевает доступ.
+  * «3 месяца» — разовый счёт со скидкой 15% (если цена укладывается в лимит
+    Telegram — до 10 000 ⭐).
+Сама обработка платежа — в handlers/payments.py.
 """
 
+import logging
+
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, LabeledPrice
 
 import config
 import plans
@@ -17,7 +23,15 @@ from handlers.common import (
     trial_days_text, url_btn, user_plan,
 )
 
+log = logging.getLogger(__name__)
 router = Router(name="plans")
+
+# Ссылки на подписку кэшируем, чтобы не создавать новую при каждом нажатии
+_sub_links: dict[tuple[int, str], str] = {}
+
+
+def approx_rub(stars_amount: int) -> str:
+    return plans.rub(stars_amount * config.STAR_RUB_BUY)
 
 
 async def plans_screen(db: Database, user_id: int):
@@ -31,12 +45,13 @@ async def plans_screen(db: Database, user_id: int):
         lines.append(f"Сейчас: <b>{esc(current.title)}</b> до {human_date(user['sub_until'])}\n")
     for p in plans.PAID_PLANS:
         mark = " ← твой" if active and p.code == current.code else ""
-        lines.append(f"<b>{p.title}</b> — {plans.rub(p.price_rub)}/мес{mark}")
+        lines.append(f"<b>{p.title}</b> — {plans.stars(p.price_stars)} в месяц{mark}")
         lines.append(f"<i>{esc(p.tagline)}</i>")
-        lines.append(f"{p.brands} брендов · каждые {p.interval_min} мин · "
-                     f"{p.legit_checks} легит-чеков\n")
+        lines.append(f"{p.brands} брендов · каждые {p.interval_min} мин · {p.legit_checks} легит-чеков\n")
     lines.append("Чем быстрее проверка — тем раньше ты пишешь продавцу. "
                  "На Goofish хорошие вещи по хорошей цене уходят за часы.")
+    lines.append(f"\n<i>Оплата звёздами Telegram. 1 ⭐ ≈ {config.STAR_RUB_BUY:g} ₽ "
+                 "при покупке звёзд — точная цена зависит от способа покупки.</i>")
     rows = [[btn(p.title, f"pl:p:{p.code}") for p in plans.PAID_PLANS]]
     if user and not user["trial_used"] and not active and config.TRIAL_DAYS:
         rows.append([btn(f"🎁 Попробовать {trial_days_text()} бесплатно", "trial")])
@@ -52,33 +67,133 @@ async def cb_plans(callback: CallbackQuery, db: Database) -> None:
     await safe_answer(callback)
 
 
+async def seats_left(db: Database, plan: plans.Plan, user_id: int) -> int | None:
+    """Сколько мест осталось (None — без ограничения). Своё место не считаем занятым."""
+    if not plan.seats:
+        return None
+    taken = await db.count_plan_seats(plan.code)
+    if await db.user_plan_code(user_id) == plan.code and await db.has_access(user_id):
+        taken -= 1
+    return max(0, plan.seats - taken)
+
+
 @router.callback_query(F.data.startswith("pl:p:"))
 async def cb_plan(callback: CallbackQuery, db: Database) -> None:
     plan = plans.ALL_PLANS.get(callback.data.split(":")[2])
-    if not plan:
+    if not plan or plan not in plans.PAID_PLANS:
         await safe_answer(callback)
         return
-    lines = [f"💎 <b>{plan.title}</b> — {plans.rub(plan.price_rub)}/мес", f"<i>{esc(plan.tagline)}</i>", ""]
+    user_id = callback.from_user.id
+    lines = [
+        f"💎 <b>{plan.title}</b> — {plans.stars(plan.price_stars)} в месяц",
+        f"<i>≈ {approx_rub(plan.price_stars)} · {esc(plan.tagline)}</i>",
+        "",
+    ]
     lines += [f"✓ {esc(perk)}" for perk in plan.perks]
-    if plan.seats:
-        taken = await db.count_plan_seats(plan.code)
-        left = max(0, plan.seats - taken)
-        lines.append(f"\n🔥 Осталось мест: <b>{left}</b> из {plan.seats}. "
+    left = await seats_left(db, plan, user_id)
+    if left is not None:
+        lines.append(f"\n🔥 Свободно мест: <b>{left}</b> из {plan.seats}. "
                      "Мест мало специально: чем меньше людей видят находку первыми — тем она ценнее.")
-    lines.append(f"\nЗа 3 месяца — скидка 15%, за год — 30%.")
-    await show(callback, "\n".join(lines),
-               kb([btn("Подключить", f"pl:buy:{plan.code}")], [btn("‹ Все тарифы", "pl:open")]))
+    quarter = plans.quarter_stars(plan)
+    lines.append("\n<b>Как платить</b>")
+    lines.append(f"• Месяц — {plans.stars(plan.price_stars)}, продлевается сам, отменить можно в любой момент")
+    if quarter:
+        lines.append(f"• 3 месяца — {plans.stars(quarter)} разово, скидка 15%")
+
+    rows = []
+    if left == 0:
+        lines.append("\n😔 Все места заняты. Напиши в поддержку — поставим в лист ожидания.")
+    elif config.PAYMENTS_ENABLED:
+        rows.append([btn(f"⭐ Месяц — {plans.stars(plan.price_stars)}", f"pl:sub:{plan.code}")])
+        if quarter:
+            rows.append([btn(f"⭐ 3 месяца — {plans.stars(quarter)}", f"pl:q:{plan.code}")])
+    else:
+        rows.append([btn("Подключить", f"pl:buy:{plan.code}")])
+    rows.append([btn("‹ Все тарифы", "pl:open")])
+    await show(callback, "\n".join(lines), kb(*rows))
     await safe_answer(callback)
+
+
+def _title(plan: plans.Plan, months: int) -> str:
+    return f"{config.BRAND_NAME} {plan.title} · {months} мес." if months > 1 else f"{config.BRAND_NAME} {plan.title}"
+
+
+def _description(plan: plans.Plan) -> str:
+    return (f"{plan.brands} брендов, проверка каждые {plan.interval_min} мин, "
+            f"{plan.legit_checks} легит-чеков в месяц. Новые объявления с Goofish без подделок.")[:255]
+
+
+@router.callback_query(F.data.startswith("pl:sub:"))
+async def cb_subscribe(callback: CallbackQuery, db: Database) -> None:
+    """Подписка на месяц с автопродлением — ссылка на оплату от Telegram."""
+    plan = plans.ALL_PLANS.get(callback.data.split(":")[2])
+    user_id = callback.from_user.id
+    if not plan or plan not in plans.PAID_PLANS or not config.PAYMENTS_ENABLED:
+        await safe_answer(callback)
+        return
+    if await seats_left(db, plan, user_id) == 0:
+        await safe_answer(callback, "Все места заняты", alert=True)
+        return
+    key = (user_id, plan.code)
+    link = _sub_links.get(key)
+    if not link:
+        try:
+            link = await callback.bot.create_invoice_link(
+                title=_title(plan, 1),
+                description=_description(plan),
+                payload=f"sub:{plan.code}:{user_id}",
+                currency="XTR",
+                prices=[LabeledPrice(label=f"{plan.title} на 30 дней", amount=plan.price_stars)],
+                subscription_period=plans.SUBSCRIPTION_PERIOD,
+            )
+        except Exception as e:
+            log.warning("Не удалось создать ссылку на подписку: %s", e)
+            await safe_answer(callback, "Telegram не дал создать счёт. Попробуй через минуту", alert=True)
+            return
+        _sub_links[key] = link
+    await safe_answer(callback)
+    await show(
+        callback,
+        f"⭐ <b>{plan.title}</b> — {plans.stars(plan.price_stars)} в месяц\n\n"
+        "Нажми кнопку — Telegram откроет оплату звёздами. Если звёзд не хватает, "
+        "Telegram сам предложит их купить.\n\n"
+        "Подписка продлевается каждые 30 дней. Отменить можно в любой момент: "
+        "Настройки Telegram → Мои звёзды → подписки. Доступ сохранится до конца оплаченного месяца.",
+        kb([url_btn(f"Оплатить {plans.stars(plan.price_stars)}", link)], [btn("‹ Назад", f"pl:p:{plan.code}")]),
+    )
+
+
+@router.callback_query(F.data.startswith("pl:q:"))
+async def cb_quarter(callback: CallbackQuery, db: Database) -> None:
+    """Разовый счёт на 3 месяца со скидкой."""
+    plan = plans.ALL_PLANS.get(callback.data.split(":")[2])
+    user_id = callback.from_user.id
+    quarter = plans.quarter_stars(plan) if plan else None
+    if not plan or not quarter or not config.PAYMENTS_ENABLED:
+        await safe_answer(callback)
+        return
+    if await seats_left(db, plan, user_id) == 0:
+        await safe_answer(callback, "Все места заняты", alert=True)
+        return
+    await safe_answer(callback)
+    await callback.message.answer_invoice(
+        title=_title(plan, 3),
+        description=_description(plan),
+        payload=f"once:{plan.code}:3",
+        currency="XTR",
+        prices=[LabeledPrice(label=f"{plan.title} на 3 месяца", amount=quarter)],
+    )
 
 
 @router.callback_query(F.data.startswith("pl:buy:"))
 async def cb_plan_buy(callback: CallbackQuery) -> None:
+    """Запасной вариант, если PAYMENTS_ENABLED=0: подключение через поддержку."""
     plan = plans.ALL_PLANS.get(callback.data.split(":")[2], plans.PRO)
     user_id = callback.from_user.id
     text = (
         f"Отлично, <b>{plan.title}</b> 🙌\n\n"
-        "Оплата прямо в боте появится совсем скоро. А пока подключаем вручную — "
-        "это быстро: напиши в поддержку название тарифа и свой ID:\n\n"
+        "Оплата в боте сейчас на паузе — подключим вручную. Напиши в поддержку "
+        "название тарифа и свой ID:\n\n"
         f"<code>{plan.title} · {user_id}</code>\n\n"
         "<i>Нажми на строку выше — она скопируется.</i>"
     )
@@ -98,11 +213,11 @@ async def cb_referral(callback: CallbackQuery, db: Database) -> None:
     came, paid = await db.count_refs(user_id)
     text = (
         "🤝 <b>Приглашай друзей</b>\n\n"
-        f"Друг приходит по твоей ссылке и получает пробный период. Как только он оформит "
+        f"Друг приходит по твоей ссылке и получает пробный период. Как только он оплатит "
         f"тариф — тебе +{config.REFERRAL_BONUS_DAYS} {plural(config.REFERRAL_BONUS_DAYS, 'день', 'дня', 'дней')} "
         "к подписке. Без ограничений по количеству.\n\n"
         f"Твоя ссылка:\n<code>{link}</code>\n\n"
-        f"Пришли по ссылке: <b>{came}</b> · оформили тариф: <b>{paid}</b>"
+        f"Пришли по ссылке: <b>{came}</b> · оплатили: <b>{paid}</b>"
     )
     share = f"https://t.me/share/url?url={link}&text=Бот,%20который%20находит%20брендовые%20вещи%20в%20Китае%20раньше%20всех"
     await show(callback, text, kb([url_btn("📤 Поделиться ссылкой", share)], [btn("‹ Тарифы", "pl:open")]))

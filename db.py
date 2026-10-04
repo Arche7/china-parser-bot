@@ -12,6 +12,7 @@
   usage      — сколько легит-чеков/сравнений цен потрачено в этом месяце
   jobs       — расписание проверок по каждому бренду (умная экономия)
   avito_cache — цены с Авито, чтобы не платить за один и тот же запрос
+  payments   — оплаты звёздами (нужны для возвратов и отмены старой подписки)
 
 Старая база (от прошлой версии бота) обновляется сама при запуске:
 новые столбцы и таблицы добавляются, старые данные не трогаются.
@@ -97,6 +98,17 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS avito_cache (
     query       TEXT PRIMARY KEY,
     data        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    charge_id   TEXT PRIMARY KEY,             -- telegram_payment_charge_id
+    user_id     INTEGER NOT NULL,
+    plan        TEXT NOT NULL,
+    months      INTEGER NOT NULL,
+    stars       INTEGER NOT NULL,
+    recurring   INTEGER NOT NULL DEFAULT 0,   -- 1 = подписка с автопродлением
+    refunded    INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL
 );
 
@@ -205,8 +217,9 @@ class Database:
             )
             start = _now()
         else:
-            # Пробный период не суммируем с платным: платный начинается сегодня
-            if user["plan"] == "trial" and plan and plan != "trial":
+            # Смена тарифа (в том числе пробный → платный) начинается сегодня,
+            # продление того же тарифа — с конца текущего срока
+            if plan and user["plan"] and plan != user["plan"]:
                 start = _now()
             else:
                 start = max(user["sub_until"], _now())
@@ -217,6 +230,19 @@ class Database:
             )
         else:
             await self.conn.execute("UPDATE users SET sub_until = ? WHERE user_id = ?", (until, user_id))
+        await self.conn.commit()
+        return until
+
+    async def set_access_until(self, user_id: int, until: int, plan: str) -> int:
+        """Доступ до конкретной даты (для подписки звёздами: дату даёт Telegram)."""
+        user = await self.get_user(user_id)
+        if user is None:
+            await self.conn.execute("INSERT INTO users (user_id, created_at) VALUES (?, ?)", (user_id, _now()))
+            current = 0
+        else:
+            current = user["sub_until"] if user["plan"] == plan else 0
+        until = max(until, current)
+        await self.conn.execute("UPDATE users SET sub_until = ?, plan = ? WHERE user_id = ?", (until, plan, user_id))
         await self.conn.commit()
         return until
 
@@ -599,6 +625,57 @@ class Database:
             (query, json.dumps(data, ensure_ascii=False), _now()),
         )
         await self.conn.commit()
+
+    # ---------------- Оплаты ----------------
+
+    async def add_payment(self, charge_id: str, user_id: int, plan: str, months: int,
+                          stars: int, recurring: bool) -> bool:
+        """Сохраняет оплату. False — если такую уже сохраняли (Telegram прислал повтор)."""
+        cur = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO payments (charge_id, user_id, plan, months, stars, recurring, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (charge_id, user_id, plan, months, stars, 1 if recurring else 0, _now()),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def has_paid(self, user_id: int) -> bool:
+        cur = await self.conn.execute(
+            "SELECT 1 FROM payments WHERE user_id = ? AND refunded = 0 LIMIT 1", (user_id,)
+        )
+        return await cur.fetchone() is not None
+
+    async def other_subscriptions(self, user_id: int, keep_charge_id: str) -> list[str]:
+        """Платежи-подписки пользователя, кроме указанного (их нужно отменить при смене тарифа)."""
+        cur = await self.conn.execute(
+            "SELECT charge_id FROM payments WHERE user_id = ? AND recurring = 1 AND refunded = 0 AND charge_id != ?",
+            (user_id, keep_charge_id),
+        )
+        return [row[0] for row in await cur.fetchall()]
+
+    async def stop_recurring(self, charge_id: str) -> None:
+        await self.conn.execute("UPDATE payments SET recurring = 0 WHERE charge_id = ?", (charge_id,))
+        await self.conn.commit()
+
+    async def get_payment(self, charge_id: str) -> aiosqlite.Row | None:
+        cur = await self.conn.execute("SELECT * FROM payments WHERE charge_id = ?", (charge_id,))
+        return await cur.fetchone()
+
+    async def mark_refunded(self, charge_id: str) -> None:
+        await self.conn.execute("UPDATE payments SET refunded = 1, recurring = 0 WHERE charge_id = ?", (charge_id,))
+        await self.conn.commit()
+
+    async def list_payments(self, limit: int = 20) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute("SELECT * FROM payments ORDER BY created_at DESC LIMIT ?", (limit,))
+        return list(await cur.fetchall())
+
+    async def stars_since(self, since: int) -> int:
+        cur = await self.conn.execute(
+            "SELECT COALESCE(SUM(stars), 0) FROM payments WHERE refunded = 0 AND created_at >= ?", (since,)
+        )
+        return (await cur.fetchone())[0]
 
     # ---------------- Уборка ----------------
 

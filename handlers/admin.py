@@ -7,6 +7,8 @@
   /revoke <id>               — забрать доступ
   /users                     — пользователи
   /stats                     — статистика и прогноз расходов
+  /payments                  — последние оплаты звёздами (handlers/payments.py)
+  /refund <id> <charge_id>   — вернуть звёзды (handlers/payments.py)
   /broadcast                 — ответь этой командой на сообщение, чтобы разослать
                                 его всем пользователям (спросит подтверждение)
 """
@@ -26,6 +28,7 @@ import plans
 from avito import AvitoPrices
 from db import Database
 from handlers.common import btn, human_date, is_admin, kb, safe_answer
+from handlers.payments import reward_referrer
 from monitor import Monitor
 
 router = Router(name="admin")
@@ -62,19 +65,9 @@ async def cmd_grant(message: Message, command: CommandObject, db: Database) -> N
         await message.answer("(Пользователю не удалось написать — пусть сначала нажмёт /start.)")
 
     # Бонус тому, кто пригласил
-    user = await db.get_user(user_id)
-    if user and user["ref_by"] and not user["ref_rewarded"]:
-        await db.mark_ref_rewarded(user_id)
-        ref_until = await db.grant(user["ref_by"], config.REFERRAL_BONUS_DAYS)
-        await message.answer(f"🤝 Пригласившему <code>{user['ref_by']}</code> +{config.REFERRAL_BONUS_DAYS} дн.")
-        try:
-            await message.bot.send_message(
-                user["ref_by"],
-                f"🤝 Твой друг оформил подписку — дарю +{config.REFERRAL_BONUS_DAYS} дней. "
-                f"Доступ теперь до {human_date(ref_until)}. Спасибо!",
-            )
-        except Exception:
-            pass
+    ref = await reward_referrer(message.bot, db, user_id)
+    if ref:
+        await message.answer(f"🤝 Пригласившему <code>{ref}</code> +{config.REFERRAL_BONUS_DAYS} дн.")
 
 
 @router.message(Command("plan"))
@@ -108,11 +101,11 @@ async def cmd_users(message: Message, db: Database) -> None:
     by_plan: dict[str, int] = {}
     for u in active:
         by_plan[u["plan"] or "pro"] = by_plan.get(u["plan"] or "pro", 0) + 1
-    mrr = sum(plans.get_plan(code).price_rub * n for code, n in by_plan.items())
+    mrr = sum(plans.get_plan(code).price_stars * n for code, n in by_plan.items())
     lines = [
         f"👥 Всего: {len(users)} · с доступом: {len(active)}",
         "По тарифам: " + (", ".join(f"{plans.get_plan(c).title} {n}" for c, n in by_plan.items()) or "—"),
-        f"Потенциальная выручка в месяц (без пробных): ~{plans.rub(mrr)}",
+        f"Если все продлят: ~{plans.stars(mrr)} в месяц ≈ {plans.rub(mrr * config.STAR_USD_PAYOUT * config.USD_RUB_RATE)} к выводу",
         "",
     ]
     for u in users[:40]:
@@ -135,8 +128,8 @@ async def cmd_stats(message: Message, db: Database, monitor: Monitor, avito: Avi
     last = datetime.fromtimestamp(monitor.last_cycle_at).strftime("%H:%M:%S") if monitor.last_cycle_at else "ещё не было"
     users = await db.list_users()
     now = int(time.time())
-    mrr = sum(plans.get_plan(u["plan"]).price_rub for u in users
-              if u["sub_until"] > now and u["plan"] not in ("trial",) and u["user_id"] not in config.ADMIN_IDS)
+    stars_month = await db.stars_since(now - 30 * 86400)
+    payout_rub = stars_month * config.STAR_USD_PAYOUT * config.USD_RUB_RATE
     await message.answer(
         "📊 <b>Статистика</b>\n\n"
         f"Брендов на радаре (уникальных): {f['jobs']} · подписок на бренды: {f['watches']}\n"
@@ -144,7 +137,8 @@ async def cmd_stats(message: Message, db: Database, monitor: Monitor, avito: Avi
         f"💸 Apify Goofish, максимум: ~${f['usd_day']:.2f}/день ≈ {plans.rub(f['rub_month'])}/мес\n"
         "<i>Реально меньше: «умная экономия» реже проверяет бренды без новинок. "
         "Точные цифры — Apify → Billing.</i>\n"
-        f"💰 Выручка по активным тарифам: ~{plans.rub(mrr)}/мес\n\n"
+        f"💰 Оплачено за 30 дней: {plans.stars(stars_month)} ≈ {plans.rub(payout_rub)} к выводу\n"
+        f"Итого за месяц: ≈ {plans.rub(payout_rub - f['rub_month'])} (выручка минус Apify по максимуму)\n\n"
         f"ИИ: {'✅ ' + config.AI_MODEL + ' / ' + config.AI_VISION_MODEL if ai.enabled() else '❌ выключен (нет AI_API_KEY)'}\n"
         f"Авито: {'✅ ' + config.AVITO_ACTOR_ID if avito.enabled else '❌ выключено'}\n\n"
         f"С момента запуска ({uptime_h:.1f} ч):\n"

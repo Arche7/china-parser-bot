@@ -112,7 +112,7 @@ async def catalog_screen(db: Database, user_id: int, page: int):
     page = max(0, min(page, pages - 1))
     chunk = keys[page * PAGE:(page + 1) * PAGE]
 
-    rows = [[btn("⭐ Готовый набор · 7 брендов", "b:preset")]] if page == 0 else []
+    rows = [[btn(f"⭐ Готовый набор · {len(brands.PRESET)} брендов", "b:preset")]] if page == 0 else []
     for i in range(0, len(chunk), 2):
         row = []
         for key in chunk[i:i + 2]:
@@ -384,7 +384,7 @@ async def list_screen(db: Database, user_id: int):
     watches = await db.list_watches(user_id)
     if not watches:
         return ("🎯 <b>Мои бренды</b>\n\nПока пусто. Начни с готового набора — "
-                "7 самых ходовых брендов в один клик — или выбери свои.",
+                f"{len(brands.PRESET)} самых ходовых брендов в один клик — или выбери свои.",
                 kb([btn("⭐ Готовый набор", "b:preset")], [btn("➕ Выбрать бренды", "b:add:0")], back_home()))
     own = await count_own(db, user_id)
     lines = [f"🎯 <b>Мои бренды</b> · {brand_limits_text(plan, len(watches), own)}", ""]
