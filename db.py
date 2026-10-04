@@ -125,6 +125,13 @@ CREATE TABLE IF NOT EXISTS feed (
 );
 CREATE INDEX IF NOT EXISTS idx_feed_user_time ON feed (user_id, created_at);
 
+CREATE TABLE IF NOT EXISTS own_slots (
+    slot_id     TEXT PRIMARY KEY,             -- из payload счёта: у продлений подписки он тот же
+    user_id     INTEGER NOT NULL,
+    until       INTEGER NOT NULL,             -- до какого момента оплачен слот
+    charge_id   TEXT                          -- последний платёж за этот слот
+);
+
 CREATE INDEX IF NOT EXISTS idx_watches_keyword ON watches (keyword);
 CREATE INDEX IF NOT EXISTS idx_sent_time ON sent (sent_at);
 CREATE INDEX IF NOT EXISTS idx_seen_time ON seen (first_seen);
@@ -143,6 +150,7 @@ MIGRATIONS = [
     ("watches", "found", "INTEGER NOT NULL DEFAULT 0"),       # сколько прислали по бренду
     ("feed", "seen", "INTEGER NOT NULL DEFAULT 0"),           # 1 = уже посмотрел (в чате или приложении)
     ("feed", "hidden", "INTEGER NOT NULL DEFAULT 0"),         # 1 = скрыл «неинтересно»
+    ("payments", "slot", "TEXT"),                             # слот «+1 свой бренд», за который платёж
 ]
 
 # Настройки пользователя по умолчанию
@@ -444,6 +452,30 @@ class Database:
         await self.conn.execute("DELETE FROM watches WHERE id = ?", (watch_id,))
         await self.conn.commit()
         return row["keyword"]
+
+    async def normalize_keywords(self, canonical) -> int:
+        """
+        Приводит сохранённые бренды к одному написанию (canonical из brands.py).
+        Если у человека бренд записан в нескольких написаниях — оставляем
+        самую старую запись (с её бюджетом), остальные удаляем.
+        Возвращает, сколько записей поправлено или удалено.
+        """
+        cur = await self.conn.execute("SELECT id, user_id, keyword FROM watches ORDER BY id")
+        groups: dict[tuple[int, str], list] = {}
+        for r in await cur.fetchall():
+            key = canonical(r["keyword"]) or r["keyword"]
+            groups.setdefault((r["user_id"], key), []).append(r)
+        fixed = 0
+        for (_, key), rows in groups.items():
+            keep, extra = rows[0], rows[1:]
+            for r in extra:
+                await self.conn.execute("DELETE FROM watches WHERE id = ?", (r["id"],))
+                fixed += 1
+            if keep["keyword"] != key:
+                await self.conn.execute("UPDATE watches SET keyword = ? WHERE id = ?", (key, keep["id"]))
+                fixed += 1
+        await self.conn.commit()
+        return fixed
 
     async def delete_watch_by_keyword(self, user_id: int, keyword: str) -> bool:
         cur = await self.conn.execute(
@@ -764,14 +796,14 @@ class Database:
     # ---------------- Оплаты ----------------
 
     async def add_payment(self, charge_id: str, user_id: int, plan: str, months: int,
-                          stars: int, recurring: bool) -> bool:
+                          stars: int, recurring: bool, slot: str | None = None) -> bool:
         """Сохраняет оплату. False — если такую уже сохраняли (Telegram прислал повтор)."""
         cur = await self.conn.execute(
             """
-            INSERT OR IGNORE INTO payments (charge_id, user_id, plan, months, stars, recurring, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO payments (charge_id, user_id, plan, months, stars, recurring, created_at, slot)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (charge_id, user_id, plan, months, stars, 1 if recurring else 0, _now()),
+            (charge_id, user_id, plan, months, stars, 1 if recurring else 0, _now(), slot),
         )
         await self.conn.commit()
         return cur.rowcount > 0
@@ -785,7 +817,8 @@ class Database:
     async def other_subscriptions(self, user_id: int, keep_charge_id: str) -> list[str]:
         """Платежи-подписки пользователя, кроме указанного (их нужно отменить при смене тарифа)."""
         cur = await self.conn.execute(
-            "SELECT charge_id FROM payments WHERE user_id = ? AND recurring = 1 AND refunded = 0 AND charge_id != ?",
+            "SELECT charge_id FROM payments WHERE user_id = ? AND recurring = 1 AND refunded = 0 "
+            "AND charge_id != ? AND plan != 'own'",
             (user_id, keep_charge_id),
         )
         return [row[0] for row in await cur.fetchall()]
@@ -805,6 +838,74 @@ class Database:
     async def list_payments(self, limit: int = 20) -> list[aiosqlite.Row]:
         cur = await self.conn.execute("SELECT * FROM payments ORDER BY created_at DESC LIMIT ?", (limit,))
         return list(await cur.fetchall())
+
+    # ---------------- Докупленные «свои» бренды ----------------
+
+    async def extend_own_slot(self, slot_id: str, user_id: int, until: int, charge_id: str) -> None:
+        """Слот «+1 свой бренд» оплачен до until (первая оплата или продление подписки)."""
+        await self.conn.execute(
+            """
+            INSERT INTO own_slots (slot_id, user_id, until, charge_id) VALUES (?, ?, ?, ?)
+            ON CONFLICT(slot_id) DO UPDATE SET until = MAX(until, excluded.until), charge_id = excluded.charge_id
+            """,
+            (slot_id, user_id, until, charge_id),
+        )
+        await self.conn.commit()
+
+    async def own_slots(self, user_id: int) -> int:
+        """Сколько слотов «+1 свой бренд» сейчас оплачено."""
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM own_slots WHERE user_id = ? AND until > ?", (user_id, _now())
+        )
+        return (await cur.fetchone())[0]
+
+    async def own_slots_all(self) -> dict[int, int]:
+        """user_id -> сколько слотов оплачено (для проверки лимитов в мониторинге)."""
+        cur = await self.conn.execute(
+            "SELECT user_id, COUNT(*) FROM own_slots WHERE until > ? GROUP BY user_id", (_now(),)
+        )
+        return {row[0]: row[1] for row in await cur.fetchall()}
+
+    async def own_slot_until(self, user_id: int) -> int | None:
+        """Когда закончится ближайший оплаченный слот."""
+        cur = await self.conn.execute(
+            "SELECT MIN(until) FROM own_slots WHERE user_id = ? AND until > ?", (user_id, _now())
+        )
+        return (await cur.fetchone())[0]
+
+    async def own_slot_exists(self, slot_id: str) -> bool:
+        cur = await self.conn.execute("SELECT 1 FROM own_slots WHERE slot_id = ?", (slot_id,))
+        return await cur.fetchone() is not None
+
+    async def expire_own_slot(self, charge_id: str) -> str | None:
+        """
+        Возврат за слот: закрываем слот, к которому относится этот платёж
+        (первый или любое продление). Возвращает последний charge_id слота —
+        по нему отменяем подписку, — или None, если слот не нашёлся.
+        """
+        cur = await self.conn.execute("SELECT slot FROM payments WHERE charge_id = ?", (charge_id,))
+        row = await cur.fetchone()
+        if not row or not row["slot"]:
+            return None
+        cur = await self.conn.execute("SELECT charge_id FROM own_slots WHERE slot_id = ?", (row["slot"],))
+        slot = await cur.fetchone()
+        if not slot:
+            return None
+        await self.conn.execute("UPDATE own_slots SET until = 0 WHERE slot_id = ?", (row["slot"],))
+        await self.conn.commit()
+        return slot["charge_id"] or charge_id
+
+    async def own_subscription_charges(self, user_id: int) -> list[str]:
+        """Последние платежи действующих слотов (чтобы отменить подписки при возврате тарифа)."""
+        cur = await self.conn.execute(
+            "SELECT charge_id FROM own_slots WHERE user_id = ? AND until > ? AND charge_id IS NOT NULL",
+            (user_id, _now()),
+        )
+        return [r[0] for r in await cur.fetchall()]
+
+    async def expire_all_own_slots(self, user_id: int) -> None:
+        await self.conn.execute("UPDATE own_slots SET until = 0 WHERE user_id = ?", (user_id,))
+        await self.conn.commit()
 
     async def stars_since(self, since: int) -> int:
         cur = await self.conn.execute(

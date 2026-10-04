@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import dataclasses
 import html
 import time
 from datetime import datetime
@@ -111,9 +112,18 @@ def is_admin(user_id: int) -> bool:
 
 
 async def user_plan(db: Database, user_id: int) -> plans.Plan:
+    """
+    Тариф человека с учётом докупленных «своих» брендов: каждый оплаченный
+    слот добавляет +1 к общему числу брендов и +1 к своим.
+    """
     if is_admin(user_id):
         return plans.ADMIN
-    return plans.get_plan(await db.user_plan_code(user_id))
+    plan = plans.get_plan(await db.user_plan_code(user_id))
+    extra = await db.own_slots(user_id) if await db.has_access(user_id) else 0
+    if extra:
+        plan = dataclasses.replace(plan, brands=plan.brands + extra,
+                                   own_brands=plan.own_brands + extra, extra_own=extra)
+    return plan
 
 
 def price_text(price_min: float | None, price_max: float | None, with_rub: bool = False) -> str:
@@ -143,6 +153,8 @@ def brand_limits_text(plan: plans.Plan, total: int, own: int) -> str:
     text = f"{total} из {plan.brands}"
     if plan.own_brands and plan.own_brands < 100:
         text += f" · своих {own} из {plan.own_brands}"
+        if plan.extra_own:
+            text += f" (+{plan.extra_own} докуплено)"
     return text
 
 

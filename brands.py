@@ -243,10 +243,21 @@ def canonical(keyword: str) -> str:
     """
     Приводит любое написание к одному ключу бренда:
     'LV' / '路易威登' / 'Louis Vuitton' -> 'louis vuitton'.
-    Незнакомые слова возвращаются как есть (в нижнем регистре).
+    Незнакомые слова приводятся к одному виду: нижний регистр, без лишних
+    пробелов и знаков вокруг слов, «ё» -> «е».
     """
     keyword = keyword.strip().lower()
-    return _INDEX.get(_normalize(keyword), keyword)
+    found = _INDEX.get(_normalize(keyword))
+    if found:
+        return found
+    # Свой бренд: одно и то же написание у всех, чтобы одинаковые бренды
+    # разных людей проверялись одним общим запросом (и стоили дешевле):
+    # 'RICK  Owens!' -> 'rick owens'. Знаки внутри названия (Y-3, A.P.C., D&G)
+    # не трогаем — по ним ищет площадка.
+    keyword = keyword.replace("ё", "е")
+    keyword = re.sub(r"[!?,;:\"«»()\[\]{}*#@~^|/\\`´’]+", " ", keyword)
+    keyword = re.sub(r"\s+", " ", keyword)
+    return keyword.strip(" -_.&+'")
 
 
 def get_brand(keyword: str) -> dict | None:

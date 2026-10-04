@@ -46,6 +46,14 @@ def parse_payload(payload: str) -> tuple[str, plans.Plan, int] | None:
     return parts[0], plan, months
 
 
+def parse_own_payload(payload: str) -> tuple[str, int] | None:
+    """'own:<slot_id>:<user_id>' -> (slot_id, user_id) (оплата «+1 свой бренд»)."""
+    parts = (payload or "").split(":")
+    if len(parts) == 3 and parts[0] == "own" and parts[1] and parts[2].isdigit():
+        return parts[1], int(parts[2])
+    return None
+
+
 def expected_amount(kind: str, plan: plans.Plan, months: int) -> int | None:
     return plan.price_stars if kind == "sub" else plans.quarter_stars(plan)
 
@@ -70,6 +78,9 @@ async def reward_referrer(bot: Bot, db: Database, user_id: int) -> int | None:
 
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery, db: Database) -> None:
+    if parse_own_payload(query.invoice_payload):
+        await pre_checkout_own(query, db)
+        return
     parsed = parse_payload(query.invoice_payload)
     if not parsed or query.currency != "XTR":
         await query.answer(ok=False, error_message="Этот счёт устарел. Открой тарифы в боте ещё раз.")
@@ -87,10 +98,95 @@ async def pre_checkout(query: PreCheckoutQuery, db: Database) -> None:
     await query.answer(ok=True)
 
 
+async def pre_checkout_own(query: PreCheckoutQuery, db: Database) -> None:
+    user_id = query.from_user.id
+    slot_id, owner = parse_own_payload(query.invoice_payload)
+    if owner != user_id:
+        await query.answer(ok=False, error_message="Это чужая ссылка на оплату. Открой «+1 свой бренд» в боте сам.")
+        return
+    if await db.own_slot_exists(slot_id):
+        await query.answer(ok=False, error_message="Эта ссылка уже оплачена. Открой «+1 свой бренд» в боте ещё раз.")
+        return
+    if query.currency != "XTR" or query.total_amount != plans.OWN_ADDON_STARS:
+        await query.answer(ok=False, error_message="Цена изменилась. Открой тарифы в боте ещё раз.")
+        return
+    plan = plans.get_plan(await db.user_plan_code(user_id))
+    if not await db.has_access(user_id) or plan not in plans.PAID_PLANS:
+        await query.answer(ok=False, error_message="Свой бренд докупается к платному тарифу. Сначала выбери тариф.")
+        return
+    if await db.own_slots(user_id) >= plans.OWN_ADDON_MAX:
+        await query.answer(ok=False, error_message=f"Больше {plans.OWN_ADDON_MAX} своих брендов докупить нельзя.")
+        return
+    await query.answer(ok=True)
+
+
+async def refund_own(bot: Bot, db: Database, user_id: int, charge_id: str) -> None:
+    """Вернуть звёзды за платёж «+1 свой бренд» и отменить эту подписку."""
+    try:
+        await bot.refund_star_payment(user_id=user_id, telegram_payment_charge_id=charge_id)
+        await db.mark_refunded(charge_id)
+    except Exception as e:
+        log.error("Не удалось вернуть звёзды за свой бренд %s: %s", charge_id, e)
+    try:
+        await bot.edit_user_star_subscription(user_id=user_id, telegram_payment_charge_id=charge_id, is_canceled=True)
+    except Exception as e:
+        log.warning("Не удалось отменить подписку на свой бренд %s: %s", charge_id, e)
+
+
+async def got_own_payment(message: Message, bot: Bot, db: Database, slot_id: str) -> None:
+    """Оплата «+1 свой бренд»: первая или продление подписки (у продления тот же slot_id)."""
+    payment = message.successful_payment
+    user_id = message.from_user.id
+    charge_id = payment.telegram_payment_charge_id
+    recurring = bool(payment.subscription_expiration_date)
+    is_new = await db.add_payment(charge_id, user_id, "own", 1, payment.total_amount, recurring, slot=slot_id)
+    if not is_new:
+        return
+    renewal = payment.is_recurring and not payment.is_first_recurring
+    # Продление пришло, а основного тарифа уже нет — слот бесполезен: возвращаем звёзды и отменяем подписку
+    if renewal and not await db.has_access(user_id):
+        await refund_own(bot, db, user_id, charge_id)
+        await message.answer("↩️ Тариф закончился, поэтому «+1 свой бренд» больше не продлеваю — "
+                             "звёзды за продление вернул, подписку отменил.")
+        return
+    # Ту же ссылку оплатили второй раз (с другого устройства) — слот уже есть, второй платёж возвращаем
+    if not renewal and await db.own_slot_exists(slot_id):
+        await refund_own(bot, db, user_id, charge_id)
+        await message.answer("↩️ Эту ссылку уже оплатили раньше — второй платёж вернул. "
+                             "Чтобы взять ещё одно место, открой «+1 свой бренд» в боте заново.")
+        return
+    # +1 день запаса, чтобы слот не пропал на минуты между окончанием и продлением
+    until = (payment.subscription_expiration_date or int(time.time()) + 30 * 86400) + 86400
+    await db.extend_own_slot(slot_id, user_id, until, charge_id)
+    if payment.is_recurring and not payment.is_first_recurring:
+        text = f"⭐ «+1 свой бренд» продлён до {human_date(until)}."
+        markup = None
+    else:
+        slots = await db.own_slots(user_id)
+        text = (f"🎉 Готово: <b>+1 свой бренд</b> до {human_date(until)}.\n\n"
+                f"Докуплено мест: {slots}. Напиши название бренда — латиницей или по-китайски.")
+        markup = kb([btn("✍️ Добавить свой бренд", "b:own")], [btn("Главная", "h:home")])
+    await message.answer(text, reply_markup=markup)
+    for admin in config.ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin,
+                f"💰 Оплата: <code>{user_id}</code> · +1 свой бренд · "
+                f"{plans.stars(payment.total_amount)}{' · подписка' if recurring else ''}\n"
+                f"charge_id: <code>{payment.telegram_payment_charge_id}</code>",
+            )
+        except Exception:
+            pass
+
+
 @router.message(F.successful_payment)
 async def got_payment(message: Message, bot: Bot, db: Database) -> None:
     payment = message.successful_payment
     user_id = message.from_user.id
+    own = parse_own_payload(payment.invoice_payload)
+    if own:
+        await got_own_payment(message, bot, db, own[0])
+        return
     parsed = parse_payload(payment.invoice_payload)
     if not parsed:
         log.error("Оплата с непонятным payload: %s", payment.invoice_payload)
@@ -175,14 +271,36 @@ async def cmd_refund(message: Message, command: CommandObject, bot: Bot, db: Dat
                              "charge_id есть в уведомлении об оплате и в /payments")
         return
     user_id, charge_id = int(args[0]), args[1]
+    row = await db.get_payment(charge_id)
     try:
         await bot.refund_star_payment(user_id=user_id, telegram_payment_charge_id=charge_id)
     except Exception as e:
         await message.answer(f"Telegram не принял возврат: {html.escape(str(e))}")
         return
     await db.mark_refunded(charge_id)
+    if row and row["plan"] == "own":
+        # Возврат за «+1 свой бренд»: закрываем только этот слот, тариф не трогаем
+        last = await db.expire_own_slot(charge_id)
+        try:
+            await bot.edit_user_star_subscription(user_id=user_id, telegram_payment_charge_id=last or charge_id,
+                                                  is_canceled=True)
+        except Exception:
+            pass
+        await message.answer("↩️ Звёзды за «+1 свой бренд» возвращены" +
+                             (f", слот <code>{user_id}</code> закрыт." if last else
+                              ", но слот не нашёлся — проверь /payments."))
+        return
+    # Возврат за тариф: заодно отменяем докупленные свои бренды, иначе они продолжат списываться
+    for own_charge in await db.own_subscription_charges(user_id):
+        try:
+            await bot.edit_user_star_subscription(user_id=user_id, telegram_payment_charge_id=own_charge,
+                                                  is_canceled=True)
+        except Exception:
+            pass
+    await db.expire_all_own_slots(user_id)
     await db.revoke(user_id)
-    await message.answer(f"↩️ Звёзды возвращены, доступ <code>{user_id}</code> закрыт.")
+    await message.answer(f"↩️ Звёзды возвращены, доступ <code>{user_id}</code> закрыт "
+                         "(подписки на свои бренды тоже отменены).")
 
 
 @router.message(Command("payments"))
@@ -201,7 +319,8 @@ async def cmd_payments(message: Message, db: Database) -> None:
         when = datetime.fromtimestamp(r["created_at"]).strftime("%d.%m %H:%M")
         flags = " · подписка" if r["recurring"] else ""
         flags += " · ВОЗВРАТ" if r["refunded"] else ""
-        lines.append(f"{when} <code>{r['user_id']}</code> {plans.ALL_PLANS.get(r['plan'], plans.PRO).title} "
+        title = "+1 свой бренд" if r["plan"] == "own" else plans.ALL_PLANS.get(r["plan"], plans.PRO).title
+        lines.append(f"{when} <code>{r['user_id']}</code> {title} "
                      f"{r['months']} мес. · {plans.stars(r['stars'])}{flags}\n<code>{r['charge_id']}</code>")
     if not rows:
         lines.append("Оплат пока нет.")

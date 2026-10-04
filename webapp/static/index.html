@@ -897,10 +897,10 @@ function brandsScreen() {
         ${active > 1 ? '<div class="live" style="position:absolute;left:24px;top:66px;width:6px;height:6px;border-radius:50%;background:var(--lime);animation-delay:.5s"></div>' : ''}</div>
       <div style="min-width:0"><div class="sub">Тариф ${esc(me.plan.title)}${me.paused ? ' · радар на паузе' : ''}</div>
         <div style="font-weight:800;font-size:20px;margin-top:4px">${L.used} из ${L.brands} ${plural(L.brands, 'бренда', 'брендов', 'брендов')}</div>
-        <div style="font-size:13px;color:var(--muted2);margin-top:6px;line-height:1.4">Проверка каждые ${L.interval != null ? L.interval : me.plan.interval_min} мин.${L.own_brands ? `<br>Своих: ${L.own_used} из ${L.own_brands}, они — раз в 30 мин.` : ''}</div></div></div>
+        <div style="font-size:13px;color:var(--muted2);margin-top:6px;line-height:1.4">Проверка каждые ${L.interval != null ? L.interval : me.plan.interval_min} мин.${L.own_brands ? `<br>Своих: ${L.own_used} из ${L.own_brands}${L.own_extra ? ` (+${L.own_extra} докуплено)` : ''}, они — раз в ${L.own_interval || 30} мин.` : ''}</div></div></div>
     ${b.items.length ? `<div class="blist">${rows}</div>` : `<div class="empty glass rise"><b>Пока ни одного бренда</b><div class="txt">Выбери, за чем охотиться, — первые находки появятся в ленте через несколько минут.</div></div>`}
     <button class="btn dash press" data-act="addBrand" style="height:54px"${full ? ' disabled' : ''}>+ Добавить бренд</button>
-    ${full ? '<div class="txt" style="text-align:center;margin-top:-6px">Все места заняты. Убери ненужный бренд или <button data-act="toPlans" style="color:var(--lime);font-weight:700">возьми тариф побольше</button>.</div>' : ''}`;
+    ${full ? '<div class="txt" style="text-align:center;margin-top:-6px">Все места заняты. Убери ненужный бренд или <button data-act="toPlans" style="color:var(--lime);font-weight:700">возьми тариф побольше</button>.</div>' + (L.own_can_buy ? `<button class="btn sm ghost press" style="margin-top:-2px" data-act="buyOwn">+1 место под свой бренд — ${num(L.own_addon_stars)} ⭐/мес</button>` : '') : ''}`;
 }
 async function toggleBrand(el) {
   const id = +el.dataset.id, w = S.brands.items.find(x => x.id === id); if (!w) return;
@@ -933,15 +933,17 @@ function editBrandSheet(id, confirmDel) {
       : `<button class="btn danger press" style="margin-top:10px" data-act="askDel" data-id="${id}">Удалить бренд</button>`}`;
 }
 function addSheetPick(q) {
-  const b = S.brands, own = b.limits.own_brands > 0;
+  const b = S.brands, L = b.limits, ownFree = L.own_used < L.own_brands;
+  const buyOwn = L.own_can_buy ? `<button class="btn sm lime press" style="margin-top:10px" data-act="buyOwn">+1 свой бренд — ${num(L.own_addon_stars)} ⭐/мес</button>` : '';
   const list = b.catalog.filter(c => !q || c.title.toLowerCase().includes(q.toLowerCase()));
   return `<div class="sbrand">Новый бренд</div><div class="txt" style="margin-top:4px">Выбери из каталога — его проверяем чаще всего.</div>
     <div class="label">Каталог HUNTR</div>
     <div class="wrapchips">${list.map(c => `<button class="chip press${c.tracked ? ' done' : ''}" data-act="pickBrand" data-key="${esc(c.key)}" data-title="${esc(c.title)}"${c.tracked ? ' disabled aria-disabled="true"' : ''}>${c.tracked ? '✓ ' : ''}${esc(c.title)}</button>`).join('')}</div>
     <div class="label">Свой бренд</div>
-    ${own ? `<div class="field"><input class="input" id="ownBrand" placeholder="Например, Our Legacy" maxlength="60" aria-label="Название бренда"><button class="btn lime sm press" data-act="pickOwn" style="height:50px">Дальше</button></div>
-      <div class="foot">Можно на английском или китайском. Свои: ${b.limits.own_used} из ${b.limits.own_brands}.</div>`
-      : `<div class="glass box"><div class="txt">Свои бренды — с тарифа PRO. В каталоге уже самые ходовые.</div><button class="btn sm ghost press" style="margin-top:10px" data-act="toPlans">Тарифы</button></div>`}`;
+    ${ownFree ? `<div class="field"><input class="input" id="ownBrand" placeholder="Например, Our Legacy" maxlength="60" aria-label="Название бренда"><button class="btn lime sm press" data-act="pickOwn" style="height:50px">Дальше</button></div>
+      <div class="foot">Можно на английском или китайском. Свои: ${L.own_used} из ${L.own_brands}.</div>`
+      : `<div class="glass box"><div class="txt">${L.own_brands ? `Свои бренды заняты: ${L.own_used} из ${L.own_brands}.` : 'Своих брендов нет в тарифе — в каталоге уже самые ходовые.'} ${L.own_can_buy ? 'Можно докупить место — проверка каждые 30 мин, как у каталога.' : 'В PRO входят 2 своих, в ELITE — 3.'}</div>
+        ${buyOwn || '<button class="btn sm ghost press" style="margin-top:10px" data-act="toPlans">Тарифы</button>'}</div>`}`;
 }
 function addSheetBudget(title) {
   const P = S.brands.presets, def = P[1] || P[0];
@@ -1063,6 +1065,22 @@ function saveSettings(patch, rerender = true) {
     catch (e) { fail(e); refreshTab('profile'); }
   }, 450);
 }
+async function buyOwn(el) {
+  el.disabled = true;
+  try {
+    const { link } = await api('/api/own_invoice', { method: 'POST', body: {} });
+    if (tg && tg.openInvoice) {
+      tg.openInvoice(link, status => {
+        if (status === 'paid') {
+          hapticNote('success'); toast('Готово — место для своего бренда добавлено');
+          setTimeout(async () => { try { await loadBrands(); closeSheet(); render(); } catch (e) { } }, 1200);
+        } else if (status === 'failed') toast('Оплата не прошла');
+      });
+    } else openLink(link);
+  } catch (e) {
+    toast(e.error === 'payments_off' ? 'Оплата временно недоступна' : e.status === 409 ? 'Докупить можно к платному тарифу' : errText(e));
+  } finally { el.disabled = false; }
+}
 async function buy(el) {
   const plan = el.dataset.plan, months = +el.dataset.m;
   el.disabled = true;
@@ -1178,6 +1196,7 @@ const ACT = {
     const cs = $('calcSum'); if (cs) cs.textContent = calcSum(S.me.settings);
   },
   buy: el => buy(el),
+  buyOwn: el => buyOwn(el),
   trial: async el => {
     el.disabled = true;
     try { await api('/api/trial', { method: 'POST', body: {} }); hapticNote('success'); await loadMe(); S.tab = 'brands'; render(); refreshTab('brands'); toast('Пробный период включён — выбери бренды'); }

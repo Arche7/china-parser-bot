@@ -122,6 +122,10 @@ async def main() -> None:
 
     await rates.refresh()
     await set_profile(bot)
+    import brands
+    fixed = await db.normalize_keywords(brands.canonical)
+    if fixed:
+        log.info("Бренды приведены к одному написанию: %d", fixed)
     await seed_admin_brands(db)
 
     # Мини-приложение HUNTR: веб-сервер в том же процессе (Railway даёт PORT и домен)

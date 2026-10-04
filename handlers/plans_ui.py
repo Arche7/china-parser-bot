@@ -11,6 +11,7 @@
 """
 
 import logging
+import uuid
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, LabeledPrice
@@ -48,11 +49,16 @@ async def plans_screen(db: Database, user_id: int):
         lines.append(f"<b>{p.title}</b> — {plans.stars(p.price_stars)} в месяц{mark}")
         lines.append(f"<i>{esc(p.tagline)}</i>")
         lines.append(f"{p.brands} брендов · каждые {p.interval_min} мин · {p.legit_checks} легит-чеков\n")
+    lines.append(f"➕ <b>Свой бренд</b> (которого нет в каталоге) — +1 место за "
+                 f"{plans.stars(plans.OWN_ADDON_STARS)} в месяц к любому тарифу. "
+                 f"Проверяется каждые {plans.OWN_BRAND_INTERVAL_MIN} мин.\n")
     lines.append("Чем быстрее проверка — тем раньше ты пишешь продавцу. "
                  "На Goofish хорошие вещи по хорошей цене уходят за часы.")
     lines.append(f"\n<i>Оплата звёздами Telegram. 1 ⭐ ≈ {config.STAR_RUB_BUY:g} ₽ "
                  "при покупке звёзд — точная цена зависит от способа покупки.</i>")
     rows = [[btn(p.title, f"pl:p:{p.code}") for p in plans.PAID_PLANS]]
+    if active and plans.can_buy_own(current) and config.PAYMENTS_ENABLED:
+        rows.append([btn(f"➕ Свой бренд — {plans.stars(plans.OWN_ADDON_STARS)}/мес", "pl:own")])
     if user and not user["trial_used"] and not active and config.TRIAL_DAYS:
         rows.append([btn(f"🎁 Попробовать {trial_days_text()} бесплатно", "trial")])
     rows.append([btn(f"🤝 Пригласи друга — +{config.REFERRAL_BONUS_DAYS} дней", "pl:ref")])
@@ -182,6 +188,64 @@ async def cb_quarter(callback: CallbackQuery, db: Database) -> None:
         payload=f"once:{plan.code}:3",
         currency="XTR",
         prices=[LabeledPrice(label=f"{plan.title} на 3 месяца", amount=quarter)],
+    )
+
+
+# ---------------------------------------------------------------- «+1 свой бренд»
+
+async def own_addon_link(bot, user_id: int) -> str:
+    """
+    Ссылка на подписку «+1 свой бренд». У каждой покупки свой slot_id в payload:
+    Telegram присылает при продлении тот же payload, так мы узнаём, какой слот продлить.
+    """
+    slot_id = uuid.uuid4().hex[:16]
+    return await bot.create_invoice_link(
+        title=f"{config.BRAND_NAME} · +1 свой бренд",
+        description=(f"Ещё одно место для своего бренда (не из каталога): проверка каждые "
+                     f"{plans.OWN_BRAND_INTERVAL_MIN} мин, находки в ленте и в чате. "
+                     "Продлевается раз в 30 дней, отменить можно в любой момент.")[:255],
+        payload=f"own:{slot_id}:{user_id}",
+        currency="XTR",
+        prices=[LabeledPrice(label="+1 свой бренд на 30 дней", amount=plans.OWN_ADDON_STARS)],
+        subscription_period=plans.SUBSCRIPTION_PERIOD,
+    )
+
+
+@router.callback_query(F.data == "pl:own")
+async def cb_own_addon(callback: CallbackQuery, db: Database) -> None:
+    user_id = callback.from_user.id
+    plan = await user_plan(db, user_id)
+    if not config.PAYMENTS_ENABLED:
+        await safe_answer(callback, "Оплата сейчас на паузе — напиши в поддержку", alert=True)
+        return
+    if not await db.has_access(user_id) or plan.code not in {p.code for p in plans.PAID_PLANS}:
+        await safe_answer(callback, "Докупить свой бренд можно к платному тарифу", alert=True)
+        return
+    if not plans.can_buy_own(plan):
+        await safe_answer(callback, f"Больше {plans.OWN_ADDON_MAX} своих брендов докупить нельзя", alert=True)
+        return
+    try:
+        link = await own_addon_link(callback.bot, user_id)
+    except Exception as e:
+        log.warning("Не удалось создать ссылку на «+1 свой бренд»: %s", e)
+        await safe_answer(callback, "Telegram не дал создать счёт. Попробуй через минуту", alert=True)
+        return
+    await safe_answer(callback)
+    have = f"Сейчас своих брендов: до {plan.own_brands}"
+    have += f" (из них {plan.extra_own} докуплено)." if plan.extra_own else "."
+    await show(
+        callback,
+        f"➕ <b>+1 свой бренд</b> — {plans.stars(plans.OWN_ADDON_STARS)} в месяц\n"
+        f"<i>≈ {approx_rub(plans.OWN_ADDON_STARS)}</i>\n\n"
+        "Любой бренд, которого нет в каталоге HUNTR: нишевый японский, винтаж, локальная марка. "
+        f"Проверяю каждые {plans.OWN_BRAND_INTERVAL_MIN} мин, как и каталог.\n\n"
+        f"{have}\n\n"
+        "<i>Почему отдельно: бренд из каталога ищут сразу многие — запрос общий и дешёвый. "
+        "Свой бренд обычно ищешь только ты, и каждый поиск оплачивается целиком.</i>\n\n"
+        "Продлевается каждые 30 дней, отменить можно в любой момент: "
+        "Настройки Telegram → Мои звёзды → подписки.",
+        kb([url_btn(f"Оплатить {plans.stars(plans.OWN_ADDON_STARS)}", link)],
+           [btn("‹ Тарифы", "pl:open"), btn("🎯 Мои бренды", "b:list")]),
     )
 
 

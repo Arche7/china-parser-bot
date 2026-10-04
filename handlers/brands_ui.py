@@ -17,6 +17,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 import brands
+import config
 import plans
 from brands_cn import chinese_name
 from db import Database
@@ -77,28 +78,49 @@ async def merge_old_variants(db: Database, user_id: int, key: str) -> list[str]:
     return removed
 
 
+# Незнакомое слово: по нему проверяем лимит «своих» брендов ещё до того, как человек ввёл название
+OWN_PROBE = "__own__"
+
+OWN_OFFER = f"Можно докупить: <b>+1 свой бренд — {plans.stars(plans.OWN_ADDON_STARS)} в месяц</b>."
+
+
 async def limit_problem(db: Database, user_id: int, keyword: str) -> str | None:
     """Почему нельзя добавить бренд (лимит тарифа) или None, если можно."""
     plan = await user_plan(db, user_id)
     watches = await db.list_watches(user_id)
     if any(brands.canonical(w["keyword"]) == keyword for w in watches):
         return None  # уже есть — просто обновим цену
+    own_brand = not brands.is_catalog(keyword)
+    can_buy = own_brand and plans.can_buy_own(plan) and await db.has_access(user_id)
     if len(watches) >= plan.brands:
-        return (f"В тарифе <b>{esc(plan.title)}</b> — до {plan.brands} брендов, и все места заняты. "
+        text = (f"В тарифе <b>{esc(plan.title)}</b> — до {plan.brands} брендов, и все места заняты. "
                 "Убери ненужный или перейди на тариф побольше.")
-    if not brands.is_catalog(keyword):
+        return text + ("\n\n" + OWN_OFFER if can_buy else "")
+    if own_brand:
         own = await count_own(db, user_id)
         if plan.own_brands == 0:
-            return (f"В тарифе <b>{esc(plan.title)}</b> доступны бренды из каталога. "
-                    "Свои бренды — с тарифа PRO.")
+            if can_buy:
+                return (f"В тариф <b>{esc(plan.title)}</b> входят бренды из каталога. " + OWN_OFFER +
+                        "\n\nИли перейди на PRO — там 2 своих бренда уже включены.")
+            return ("Свои бренды — на платных тарифах: в PRO входят 2, в ELITE — 3, "
+                    "а к START их можно докупить.")
         if own >= plan.own_brands:
-            return (f"Своих брендов в тарифе <b>{esc(plan.title)}</b> — до {plan.own_brands}. "
-                    "Можно взять бренд из каталога или перейти на тариф выше.")
+            text = f"Своих брендов в тарифе <b>{esc(plan.title)}</b> — до {plan.own_brands}, все заняты."
+            if can_buy:
+                return text + " " + OWN_OFFER
+            return text + " Можно взять бренд из каталога или перейти на тариф выше."
     return None
 
 
-def limit_keyboard():
-    return kb([btn("💎 Тарифы", "pl:open"), btn("🎯 Мои бренды", "b:list")], back_home())
+async def limit_keyboard(db: Database | None = None, user_id: int | None = None, keyword: str | None = None):
+    """Кнопки под сообщением о лимите. Для своего бренда — ещё и «докупить»."""
+    rows = []
+    if db and user_id and keyword is not None and not brands.is_catalog(keyword) and config.PAYMENTS_ENABLED:
+        plan = await user_plan(db, user_id)
+        if plans.can_buy_own(plan) and await db.has_access(user_id):
+            rows.append([btn(f"➕ Свой бренд — {plans.stars(plans.OWN_ADDON_STARS)}/мес", "pl:own")])
+    rows.append([btn("💎 Тарифы", "pl:open"), btn("🎯 Мои бренды", "b:list")])
+    return kb(*rows, back_home())
 
 
 # ---------------------------------------------------------------- каталог
@@ -184,7 +206,7 @@ def price_hint() -> str:
 async def ask_price(event, db: Database, user_id: int, keyword: str, state: FSMContext) -> None:
     problem = await limit_problem(db, user_id, keyword)
     if problem:
-        await show(event, "🔒 " + problem, limit_keyboard())
+        await show(event, "🔒 " + problem, await limit_keyboard(db, user_id, keyword))
         return
     await state.update_data(pending=keyword)
     name = esc(brands.display_name(keyword))
@@ -203,10 +225,10 @@ async def cb_pick(callback: CallbackQuery, db: Database, state: FSMContext) -> N
 
 @router.callback_query(F.data == "b:own")
 async def cb_own(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
-    plan = await user_plan(db, callback.from_user.id)
-    if plan.own_brands == 0:
-        await show(callback, f"🔒 В тарифе <b>{esc(plan.title)}</b> — только бренды из каталога. "
-                             "Свои бренды открываются с PRO.", limit_keyboard())
+    user_id = callback.from_user.id
+    problem = await limit_problem(db, user_id, OWN_PROBE)
+    if problem:
+        await show(callback, "🔒 " + problem, await limit_keyboard(db, user_id, OWN_PROBE))
         await safe_answer(callback)
         return
     await state.set_state(AddFlow.own_name)
@@ -269,7 +291,7 @@ async def finish_add(event, db: Database, monitor: Monitor, user_id: int, keywor
                      low: float | None, high: float | None) -> None:
     problem = await limit_problem(db, user_id, keyword)
     if problem:
-        await show(event, "🔒 " + problem, limit_keyboard())
+        await show(event, "🔒 " + problem, await limit_keyboard(db, user_id, keyword))
         return
     removed = await merge_old_variants(db, user_id, keyword) if brands.is_catalog(keyword) else []
     is_new = await db.add_watch(user_id, keyword, low, high)

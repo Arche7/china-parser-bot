@@ -145,6 +145,27 @@ class Monitor:
                 log.exception("Ошибка в цикле мониторинга")
             await asyncio.sleep(config.TICK_MIN * 60)
 
+    async def allowed_watches(self) -> list:
+        """
+        Включённые бренды, но «своих» не больше, чем оплачено: тариф + докупленные
+        слоты. Если слот не продлили или тариф понизили, лишние свои бренды
+        (самые новые) перестают проверяться, пока человек не освободит место.
+        """
+        return self.limit_own(await self.db.active_watches(), await self.db.own_slots_all())
+
+    @staticmethod
+    def limit_own(watches: list, slots: dict[int, int]) -> list:
+        used: dict[int, int] = defaultdict(int)
+        out = []
+        for watch in sorted(watches, key=lambda w: w["id"]):
+            if not watch["is_admin"] and not brands.is_catalog(watch["keyword"]):
+                uid = watch["user_id"]
+                if used[uid] >= plans.get_plan(watch["plan"]).own_brands + slots.get(uid, 0):
+                    continue
+                used[uid] += 1
+            out.append(watch)
+        return out
+
     @staticmethod
     def group_watches(watches: list) -> dict[str, list]:
         """Бренд -> его подписчики. 'lv' и '路易威登' — один бренд 'louis vuitton'."""
@@ -158,7 +179,7 @@ class Monitor:
         return min(watch_interval(w) for w in watches)
 
     async def check_due(self) -> None:
-        jobs = self.group_watches(await self.db.active_watches())
+        jobs = self.group_watches(await self.allowed_watches())
         now = time.time()
         due = []
         for source in self.sources:
@@ -303,7 +324,7 @@ class Monitor:
         """
         keyword = brands.canonical(keyword)
         name = html.escape(brands.display_name(keyword))
-        jobs = self.group_watches(await self.db.active_watches())
+        jobs = self.group_watches(await self.allowed_watches())
         watches = jobs.get(keyword, [])
         if not watches:
             return
@@ -533,7 +554,7 @@ class Monitor:
     # ------------------------------------------------------------------
 
     async def cost_forecast(self) -> dict:
-        jobs = self.group_watches(await self.db.active_watches())
+        jobs = self.group_watches(await self.allowed_watches())
         runs_items = 0.0
         for keyword, watches in jobs.items():
             per_day = (24 * 60) / self.job_interval(watches)

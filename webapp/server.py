@@ -21,7 +21,7 @@ import rates
 import services
 from handlers.brands_ui import limit_problem, merge_old_variants
 from handlers.common import count_own, run_background, user_plan
-from handlers.plans_ui import _description, _title, seats_left
+from handlers.plans_ui import _description, _title, own_addon_link, seats_left
 
 log = logging.getLogger(__name__)
 
@@ -310,7 +310,11 @@ async def api_brands(request: web.Request) -> web.Response:
                    "interval": monitor_mod.watch_interval({"is_admin": request["admin"], "plan": plan.code,
                                                            "keyword": "gucci"}),
                    "own_interval": monitor_mod.watch_interval({"is_admin": request["admin"], "plan": plan.code,
-                                                               "keyword": "__own__"})},
+                                                               "keyword": "__own__"}),
+                   # докупка «+1 свой бренд»
+                   "own_extra": plan.extra_own, "own_addon_stars": plans.OWN_ADDON_STARS,
+                   "own_can_buy": bool(config.PAYMENTS_ENABLED and plans.can_buy_own(plan)
+                                       and await db.has_access(uid))},
         "presets": [{"label": label, "min": lo, "max": hi} for label, lo, hi in brands.PRICE_PRESETS],
     })
 
@@ -467,6 +471,17 @@ async def api_invoice(request: web.Request) -> web.Response:
     return web.json_response({"link": link})
 
 
+async def api_own_invoice(request: web.Request) -> web.Response:
+    """Ссылка на подписку «+1 свой бренд»."""
+    db, uid = request.app[DB], request["uid"]
+    if not config.PAYMENTS_ENABLED:
+        raise ApiError(400, "payments_off")
+    plan = await user_plan(db, uid)
+    if not await db.has_access(uid) or not plans.can_buy_own(plan):
+        raise ApiError(409, "own_not_available")
+    return web.json_response({"link": await own_addon_link(request.app[BOT], uid)})
+
+
 async def api_trial(request: web.Request) -> web.Response:
     db, uid = request.app[DB], request["uid"]
     if config.TRIAL_DAYS <= 0:
@@ -544,6 +559,7 @@ def create_app(db, bot, monitor, avito, sources: dict) -> web.Application:
     r.add_post("/api/photos", api_photos)
     r.add_get("/api/plans", api_plans)
     r.add_post("/api/invoice", api_invoice)
+    r.add_post("/api/own_invoice", api_own_invoice)
     r.add_post("/api/trial", api_trial)
     r.add_post("/api/settings", api_settings)
     r.add_static("/static", STATIC)
