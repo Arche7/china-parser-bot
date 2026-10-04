@@ -44,6 +44,7 @@ import config
 import plans
 import rates
 from db import Database
+from decoder import decode, group_of
 from sources.base import Listing, Source
 
 log = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ class Monitor:
             try:
                 await rates.refresh()
                 await self.check_due()
+                await self.send_digests()
             except Exception:
                 log.exception("Ошибка в цикле мониторинга")
             await asyncio.sleep(config.TICK_MIN * 60)
@@ -270,15 +272,14 @@ class Monitor:
             if not new_good:
                 return good
 
-            # 5. Переводим заголовки одним запросом и рассылаем
+            # 5. Переводим заголовки одним запросом и раскладываем по лентам.
+            # Сразу присылаем только тем, кто выбрал «каждое сразу»; остальным
+            # придёт одна сводка (см. send_digests).
             translations = await self._translate(new_good)
             for listing in reversed(new_good):  # от старых к новым
                 for watch in watches:
                     if price_matches(listing, watch["price_min"], watch["price_max"]):
-                        await self.send_listing(
-                            watch["user_id"], listing, keyword,
-                            title_ru=translations.get(listing.id), watch_keyword=watch["keyword"],
-                        )
+                        await self.deliver_new(watch, listing, keyword, translations.get(listing.id))
             return good
 
     async def _translate(self, listings: list[Listing]) -> dict[str, str]:
@@ -347,6 +348,8 @@ class Monitor:
             for listing in suitable:
                 await self.send_listing(user_id, listing, keyword, header="📌",
                                         title_ru=translations.get(listing.id), count=False)
+                await self.db.add_feed(user_id, listing.source, listing.id, keyword,
+                                       group_of(decode(listing.title).category), notified=True)
 
     # ------------------------------------------------------------------
     # Отправка сообщений
@@ -362,6 +365,81 @@ class Monitor:
 
     def forget_settings(self, user_id: int) -> None:
         self._settings_cache.pop(user_id, None)
+
+    async def deliver_new(self, watch, listing: Listing, keyword: str, title_ru: str | None) -> None:
+        """Новая находка для одного подписчика: в ленту, а при режиме «сразу» — ещё и в чат."""
+        user_id = watch["user_id"]
+        data = dataclasses.asdict(listing)
+        if title_ru:
+            data["title_ru"] = title_ru
+        await self.db.save_listing(listing.source, listing.id, keyword, data)
+        settings = await self._settings(user_id)
+        instant = settings.get("notify") == "instant"
+        grp = group_of(decode(listing.title).category)
+        if not await self.db.add_feed(user_id, listing.source, listing.id, keyword, grp, notified=instant):
+            return  # уже было в ленте (нашлось по другому написанию)
+        await self.db.bump_watch_found(user_id, watch["keyword"])
+        if instant:
+            await self.send_listing(user_id, listing, keyword, title_ru=title_ru, count=False)
+
+    # ------------------------------------------------------------------
+    # Сводки: одно сообщение вместо десятков
+    # ------------------------------------------------------------------
+
+    async def send_digests(self) -> None:
+        now = time.time()
+        for user_id in await self.db.users_with_pending():
+            settings = await self._settings(user_id)
+            mode = settings.get("notify", "digest")
+            if mode == "instant":
+                await self.db.mark_notified(user_id)
+                continue
+            if mode == "off":
+                continue  # копится в ленте, без уведомлений
+            every = int(settings.get("every") or 30) * 60
+            if now - float(settings.get("last_digest") or 0) < every - 30:
+                continue
+            user = await self.db.get_user(user_id)
+            if not user or user["paused"]:
+                continue
+            pending = await self.db.pending_feed(user_id)
+            if not pending:
+                continue
+            ok = await self._send_digest(user_id, pending, settings)
+            if ok:
+                await self.db.mark_notified(user_id)
+                await self.db.update_settings(user_id, last_digest=int(now))
+                self.forget_settings(user_id)
+
+    async def _send_digest(self, user_id: int, pending: list, settings: dict) -> bool:
+        from cards import digest_caption, digest_keyboard  # здесь, чтобы не было циклического импорта
+        top = None
+        for row in pending:
+            found = await self.db.get_listing(row["source"], row["item_id"])
+            if found and found[1].get("image"):
+                top = found[1]
+                break
+        caption = digest_caption(pending, every_min=int(settings.get("every") or 30))
+        markup = digest_keyboard(pending)
+        silent = bool(settings.get("quiet")) and is_quiet_now()
+        try:
+            if top:
+                try:
+                    await self.bot.send_photo(user_id, photo=top["image"], caption=caption,
+                                              reply_markup=markup, disable_notification=silent)
+                except TelegramBadRequest:
+                    await self.bot.send_message(user_id, caption, reply_markup=markup, disable_notification=silent)
+            else:
+                await self.bot.send_message(user_id, caption, reply_markup=markup, disable_notification=silent)
+            self.messages_sent += 1
+            return True
+        except TelegramForbiddenError:
+            await self.db.set_paused(user_id, True)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except Exception as e:
+            log.warning("Не удалось отправить сводку %s: %s", user_id, e)
+        return False
 
     async def send_listing(
         self,

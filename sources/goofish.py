@@ -79,7 +79,7 @@ class GoofishSource(Source):
 
         # Запускаем актор и ждём, пока он закончит (до 5 минут)
         run = await self.client.actor(self.actor_id).call(
-            run_input=run_input, timeout_secs=300
+            run_input=run_input, timeout_secs=300, logger=None
         )
         if not run:
             raise RuntimeError("Apify не вернул результат запуска")
@@ -110,6 +110,54 @@ class GoofishSource(Source):
             price_note = f" (цена {price_min or 0:g}–{price_max or '∞'})"
         log.info("Goofish: «%s»%s — получено %d объявлений", keyword, price_note, len(listings))
         return listings
+
+    async def details(self, item_id: str) -> dict | None:
+        """
+        Полная карточка ОДНОГО объявления: все фото, описание, состояние
+        и репутация продавца. Нужна для легит-чека. Стоит как один результат
+        в режиме "full" (дороже summary, но это один запрос по кнопке).
+        """
+        url = f"https://www.goofish.com/item?id={item_id}"
+        base_input = {
+            "maxItems": 1,
+            "detailLevel": "full",
+            "proxyConfiguration": {
+                "useApifyProxy": True,
+                "apifyProxyGroups": ["RESIDENTIAL"],
+                "apifyProxyCountry": self.proxy_country,
+            },
+        }
+        # Актор принимает ссылки или числовые id; пробуем оба формата
+        for start in ([{"url": url}], [url], [str(item_id)]):
+            try:
+                run = await self.client.actor(self.actor_id).call(
+                    run_input={**base_input, "startUrls": start}, timeout_secs=180, logger=None
+                )
+                dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "default_dataset_id", None)
+                if not dataset_id:
+                    continue
+                page = await self.client.dataset(dataset_id).list_items(clean=True)
+                items = page.items if hasattr(page, "items") else page.get("items", [])
+            except Exception as e:
+                log.warning("Goofish: не удалось получить карточку %s (%s): %s", item_id, type(start[0]).__name__, e)
+                continue
+            if not items:
+                continue
+            raw = items[0]
+            images = raw.get("images") or []
+            images = [("https:" + i if isinstance(i, str) and i.startswith("//") else i) for i in images if isinstance(i, str)]
+            seller = raw.get("seller") if isinstance(raw.get("seller"), dict) else {}
+            stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+            return {
+                "images": images[:9],
+                "description": str(raw.get("description") or "")[:1500],
+                "condition": raw.get("condition"),
+                "price_original": raw.get("priceOriginal"),
+                "seller": {k: seller.get(k) for k in ("name", "zhimaCredit", "zhimaAuth", "totalSold",
+                                                     "goodReviewRate", "registeredDays", "replyRate24h", "lastActive")},
+                "stats": {k: stats.get(k) for k in ("views", "wants", "favorites")},
+            }
+        return None
 
     def _to_listing(self, raw: dict) -> Listing | None:
         item_id = _get(raw, "id", "itemId", "item_id")

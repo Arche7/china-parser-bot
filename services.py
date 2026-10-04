@@ -1,0 +1,179 @@
+"""
+Общая логика для бота и приложения HUNTR: выгода и легит-чек объявления.
+
+И кнопки в чате, и мини-приложение вызывают эти функции, поэтому
+результат и лимиты тарифа везде одинаковые.
+
+Легит-чек объявления:
+  1. Берём полную карточку объявления с Goofish (все фото, описание,
+     репутация продавца) — один запрос к Apify, результат запоминаем.
+  2. Отдаём фото и контекст «зрячей» модели ИИ.
+  3. Результат тоже запоминаем: повторное нажатие бесплатно и мгновенно,
+     лимит тарифа не тратится.
+"""
+
+import logging
+
+import ai
+import brands
+import config
+import plans
+import rates
+from avito import AvitoPrices
+from db import Database
+from decoder import decode
+
+log = logging.getLogger(__name__)
+
+
+class LimitReached(Exception):
+    """Лимит тарифа на этот месяц исчерпан."""
+
+
+async def _plan(db: Database, user_id: int) -> plans.Plan:
+    if user_id in config.ADMIN_IDS:
+        return plans.ADMIN
+    return plans.get_plan(await db.user_plan_code(user_id))
+
+
+async def quota_left(db: Database, user_id: int, kind: str) -> int:
+    plan = await _plan(db, user_id)
+    limit = plan.legit_checks if kind == "legit" else plan.price_checks
+    return max(0, limit - await db.get_usage(user_id, kind))
+
+
+# ----------------------------------------------------------------------
+# Выгода
+# ----------------------------------------------------------------------
+
+def cost_breakdown(data: dict, settings: dict) -> dict | None:
+    price = data.get("price")
+    if price is None:
+        return None
+    d = decode(data.get("title") or "")
+    rate = rates.cny_rub()
+    base = price * rate
+    fee_pct = float(settings.get("fee", config.BUYER_FEE_PCT))
+    per_kg = float(settings.get("delivery", config.DELIVERY_RUB_PER_KG))
+    fee = base * fee_pct / 100
+    delivery = d.weight_kg * per_kg
+    return {
+        "rate": rate, "rate_label": rates.source_label(), "base": base, "fee": fee, "fee_pct": fee_pct,
+        "weight": d.weight_kg, "per_kg": per_kg, "delivery": delivery, "total": base + fee + delivery,
+        "category": d.category,
+    }
+
+
+async def profit_for(db: Database, avito: AvitoPrices, user_id: int, source: str, item_id: str) -> dict:
+    """
+    {'keyword', 'data', 'cost', 'market', 'profit', 'pct', 'left'}.
+    Бросает LookupError, если объявления нет, и LimitReached — если кончился лимит.
+    """
+    found = await db.get_listing(source, item_id)
+    if not found:
+        raise LookupError("listing")
+    keyword, data = found
+    settings = await db.get_settings(user_id)
+    cost = cost_breakdown(data, settings)
+    category = decode(data.get("title") or "").category
+
+    cached = await db.get_avito(f"{brands.display_name(keyword)} {category or ''}".strip().lower(),
+                                config.AVITO_CACHE_HOURS * 3600)
+    if cached is None and await quota_left(db, user_id, "price") <= 0:
+        raise LimitReached("price")
+    market = await avito.market(keyword, category)
+    if cached is None and market and market.get("median"):
+        await db.add_usage(user_id, "price")
+
+    profit = pct = None
+    if cost and market and market.get("median"):
+        profit = market["median"] - cost["total"]
+        pct = profit / cost["total"] * 100 if cost["total"] else 0
+    return {"keyword": keyword, "data": data, "cost": cost, "market": market,
+            "profit": profit, "pct": pct, "left": await quota_left(db, user_id, "price")}
+
+
+# ----------------------------------------------------------------------
+# Легит-чек объявления
+# ----------------------------------------------------------------------
+
+def seller_lines(detail: dict | None) -> list[str]:
+    """Репутация продавца по-русски — то, что видно в полной карточке Goofish."""
+    if not detail:
+        return []
+    s = detail.get("seller") or {}
+    lines = []
+    credit = s.get("zhimaCredit")
+    if credit:
+        good = "极好" in str(credit) or "优秀" in str(credit)
+        lines.append(f"кредит Zhima: {'отличный' if good else credit}")
+    if s.get("totalSold") not in (None, ""):
+        lines.append(f"продал вещей: {s['totalSold']}")
+    if s.get("goodReviewRate") not in (None, ""):
+        lines.append(f"хороших отзывов: {s['goodReviewRate']}")
+    if s.get("registeredDays") not in (None, ""):
+        lines.append(f"на Goofish дней: {s['registeredDays']}")
+    return lines
+
+
+async def enrich(db: Database, sources: dict, keyword: str, source: str, item_id: str, data: dict) -> dict | None:
+    """Полная карточка объявления (с кэшем в базе)."""
+    if data.get("detail") is not None:
+        return data["detail"] or None
+    src = sources.get(source)
+    detail = await src.details(item_id) if src else None
+    data["detail"] = detail or {}
+    await db.save_listing(source, item_id, keyword, data)
+    return detail
+
+
+async def legit_for(db: Database, sources: dict, user_id: int, source: str, item_id: str) -> dict:
+    """
+    {'keyword', 'data', 'result', 'seller', 'photos', 'cached', 'left'}.
+    result=None — если ИИ не ответил. Бросает LookupError / LimitReached.
+    """
+    found = await db.get_listing(source, item_id)
+    if not found:
+        raise LookupError("listing")
+    keyword, data = found
+    if data.get("legit"):
+        return {"keyword": keyword, "data": data, "result": data["legit"], "seller": seller_lines(data.get("detail")),
+                "photos": data.get("legit_photos", 1), "cached": True, "left": await quota_left(db, user_id, "legit")}
+    if await quota_left(db, user_id, "legit") <= 0:
+        raise LimitReached("legit")
+
+    detail = await enrich(db, sources, keyword, source, item_id, data)
+    images = (detail or {}).get("images") or ([data["image"]] if data.get("image") else [])
+    if not images:
+        return {"keyword": keyword, "data": data, "result": None, "seller": [], "photos": 0,
+                "cached": False, "left": await quota_left(db, user_id, "legit")}
+
+    notes = []
+    if detail:
+        if detail.get("description"):
+            notes.append("Описание продавца: " + detail["description"][:1200])
+        if detail.get("condition"):
+            notes.append(f"Состояние: {detail['condition']}")
+        sl = seller_lines(detail)
+        if sl:
+            notes.append("Продавец: " + "; ".join(sl))
+    category = decode(data.get("title") or "").category
+    market = await db.get_avito(f"{brands.display_name(keyword)} {category or ''}".strip().lower(),
+                                config.AVITO_CACHE_HOURS * 3600)
+    if market and market.get("median"):
+        notes.append(f"Похожие вещи на Авито в России: медиана {market['median']:.0f} ₽")
+    price = data.get("price")
+    result = await ai.legit_check(
+        brands.display_name(keyword),
+        image_urls=images[:6],
+        title=data.get("title"),
+        price_text=f"¥{price:.0f} (≈ {price * rates.cny_rub():.0f} ₽)" if price is not None else None,
+        notes="\n".join(notes) or None,
+    )
+    if result:
+        await db.add_usage(user_id, "legit")
+        data["legit"] = result
+        data["legit_photos"] = len(images[:6])
+        await db.save_listing(source, item_id, keyword, data)
+    return {"keyword": keyword, "data": data, "result": result, "seller": seller_lines(detail),
+            "photos": len(images[:6]), "cached": False, "left": await quota_left(db, user_id, "legit")}

@@ -21,7 +21,7 @@ import plans
 from brands_cn import chinese_name
 from db import Database
 from handlers.common import (
-    BTN_BRANDS, back_home, brand_limits_text, btn, count_own, esc, kb, price_text,
+    OLD_BRANDS, back_home, is_admin, brand_limits_text, btn, count_own, esc, kb, price_text,
     run_background, safe_answer, show, url_btn, user_plan,
 )
 from monitor import Monitor, watch_interval
@@ -112,7 +112,8 @@ async def catalog_screen(db: Database, user_id: int, page: int):
     page = max(0, min(page, pages - 1))
     chunk = keys[page * PAGE:(page + 1) * PAGE]
 
-    rows = [[btn(f"⭐ Готовый набор · {len(brands.PRESET)} брендов", "b:preset")]] if page == 0 else []
+    # «Готовый набор» — личный набор админа, остальные собирают свои бренды сами
+    rows = [[btn(f"⭐ Готовый набор · {len(brands.PRESET)} брендов", "b:preset")]] if page == 0 and is_admin(user_id) else []
     for i in range(0, len(chunk), 2):
         row = []
         for key in chunk[i:i + 2]:
@@ -128,7 +129,7 @@ async def catalog_screen(db: Database, user_id: int, page: int):
             nav.append(btn("›", f"b:add:{page + 1}"))
         rows.append(nav)
     rows.append([btn("✍️ Свой бренд", "b:own")])
-    rows.append([btn("‹ Пульт", "h:home"), btn("🎯 Мои бренды", "b:list")])
+    rows.append([btn("‹ Главная", "h:home"), btn("🎯 Мои бренды", "b:list")])
 
     own = await count_own(db, user_id)
     text = (
@@ -332,6 +333,9 @@ async def cb_skip_chinese(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "b:preset")
 async def cb_preset(callback: CallbackQuery, db: Database) -> None:
+    if not is_admin(callback.from_user.id):
+        await safe_answer(callback)
+        return
     plan = await user_plan(db, callback.from_user.id)
     names = ", ".join(brands.BRANDS[k]["title"] for k in brands.PRESET)
     fit = min(len(brands.PRESET), plan.brands)
@@ -347,11 +351,16 @@ async def cb_preset(callback: CallbackQuery, db: Database) -> None:
 
 @router.message(Command("preset"))
 async def cmd_preset(message: Message, db: Database, monitor: Monitor) -> None:
+    if not is_admin(message.from_user.id):
+        return
     await apply_preset(message, db, monitor, message.from_user.id)
 
 
 @router.callback_query(F.data == "b:presetok")
 async def cb_preset_ok(callback: CallbackQuery, db: Database, monitor: Monitor) -> None:
+    if not is_admin(callback.from_user.id):
+        await safe_answer(callback)
+        return
     await safe_answer(callback, "Добавляю…")
     await apply_preset(callback, db, monitor, callback.from_user.id)
 
@@ -383,9 +392,9 @@ async def list_screen(db: Database, user_id: int):
     plan = await user_plan(db, user_id)
     watches = await db.list_watches(user_id)
     if not watches:
-        return ("🎯 <b>Мои бренды</b>\n\nПока пусто. Начни с готового набора — "
-                f"{len(brands.PRESET)} самых ходовых брендов в один клик — или выбери свои.",
-                kb([btn("⭐ Готовый набор", "b:preset")], [btn("➕ Выбрать бренды", "b:add:0")], back_home()))
+        return ("🎯 <b>Мои бренды</b>\n\nПока пусто. Выбери бренды, за которыми следить, "
+                "и бюджет — это пара нажатий.",
+                kb([btn("➕ Выбрать бренды", "b:add:0")], back_home()))
     own = await count_own(db, user_id)
     lines = [f"🎯 <b>Мои бренды</b> · {brand_limits_text(plan, len(watches), own)}", ""]
     rows = []
@@ -404,7 +413,7 @@ async def list_screen(db: Database, user_id: int):
 
 
 @router.message(Command("list"))
-@router.message(F.text == BTN_BRANDS)
+@router.message(F.text.in_(OLD_BRANDS))
 async def cmd_list(message: Message, db: Database, state: FSMContext) -> None:
     await state.clear()
     text, markup = await list_screen(db, message.from_user.id)

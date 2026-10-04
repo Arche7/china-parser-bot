@@ -59,7 +59,7 @@ async def cmd_grant(message: Message, command: CommandObject, db: Database) -> N
         await message.bot.send_message(
             user_id,
             f"🎉 Подключил тариф <b>{plan.title}</b> до {human_date(until)}!\n\n"
-            "Открой пульт — /start — и добавляй бренды.",
+            "Нажми /start и добавляй бренды.",
         )
     except Exception:
         await message.answer("(Пользователю не удалось написать — пусть сначала нажмёт /start.)")
@@ -148,6 +148,24 @@ async def cmd_stats(message: Message, db: Database, monitor: Monitor, avito: Avi
         f"• отсеяно (подделки/не тот бренд): {monitor.items_filtered}\n"
         f"• отправлено карточек: {monitor.messages_sent}"
     )
+
+
+@router.message(Command("avitotest"))
+async def cmd_avitotest(message: Message, command: CommandObject, avito: AvitoPrices) -> None:
+    """Проверка Авито: /avitotest stone island куртка — сделает настоящий запрос к актору."""
+    query = (command.args or "stone island куртка").strip()
+    parts = query.split()
+    await message.answer(f"Проверяю Авито: «{html.escape(query)}»… (до 2 минут)")
+    keyword, category = " ".join(parts[:-1]) or query, parts[-1] if len(parts) > 1 else None
+    market = await avito.market(keyword, category)
+    if not avito.enabled:
+        await message.answer("Авито выключено (AVITO_ENABLED=0).")
+    elif market and market.get("median"):
+        await message.answer(f"✅ Работает: {market['count']} цен, медиана {market['median']:.0f} ₽ "
+                             f"({market['p25']:.0f}–{market['p75']:.0f} ₽)\n{market['url']}")
+    else:
+        await message.answer(f"⚠️ Цен не получил (нашлось: {(market or {}).get('count', 0)}). "
+                             "Загляни в логи Railway — там видно ответ актора.")
 
 
 @router.message(Command("broadcast"))

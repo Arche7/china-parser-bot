@@ -221,6 +221,26 @@ def _size(text: str, category: str | None) -> str | None:
     return None
 
 
+# Крупные разделы для ленты и сводок
+GROUPS = ["Одежда", "Обувь", "Сумки", "Аксессуары", "Другое"]
+_SHOES = {"кроссовки", "кеды", "лоферы", "туфли", "ботинки", "шлёпанцы", "сандалии", "обувь"}
+_BAGS = {"рюкзак", "сумка через плечо", "сумка", "сумка-тоут", "поясная сумка", "нагрудная сумка", "кошелёк", "картхолдер"}
+_ACC = {"кепка", "панама", "шапка", "головной убор", "шарф", "ремень", "солнцезащитные очки", "очки", "часы",
+        "цепочка", "браслет", "кольцо", "серьги", "носки"}
+
+
+def group_of(category: str | None) -> str:
+    if not category:
+        return "Другое"
+    if category in _SHOES:
+        return "Обувь"
+    if category in _BAGS:
+        return "Сумки"
+    if category in _ACC:
+        return "Аксессуары"
+    return "Одежда"
+
+
 def decode(title: str) -> Decoded:
     text = title.lower()
     result = Decoded()

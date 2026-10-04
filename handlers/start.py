@@ -15,7 +15,7 @@ import plans
 import texts
 from db import Database
 from handlers.common import (
-    REPLY_KB, btn, esc, human_date, kb, safe_answer, trial_days_text,
+    REPLY_KB, btn, esc, human_date, kb, safe_answer, trial_days_text, webapp_button,
 )
 from handlers.home import send_home
 
@@ -66,7 +66,7 @@ async def slide_keyboard(db: Database, user_id: int, index: int):
             rows.append([btn(f"🎁 Начать бесплатно — {trial_days_text()}", "trial")])
         else:
             rows.append([btn("💎 Выбрать тариф", "pl:open")])
-        rows.append([btn("🏠 Открыть пульт", "h:home")])
+        rows.append([btn("Главная", "h:home")])
     else:
         rows.append([btn("Пропустить →", "h:home")])
     return kb(*rows)
@@ -101,9 +101,10 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, stat
     name = esc(user.first_name or "друг")
     if is_new:
         caption = texts.WELCOME_NEW.format(name=name)
-        markup = kb([btn("▶️ Как это работает", "ob:0")],
+        markup = kb([webapp_button()] if webapp_button() else [],
+                    [btn("▶️ Как это работает", "ob:0")],
                     [btn(f"🎁 Сразу попробовать — {trial_days_text()}", "trial")] if config.TRIAL_DAYS else [],
-                    [btn("🏠 Открыть пульт", "h:home")])
+                    [btn("Главная", "h:home")])
         try:
             if os.path.exists(INTRO) or "intro" in _file_ids:
                 sent = await message.answer_animation(
@@ -116,12 +117,12 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, stat
         except Exception as e:
             log.warning("Не удалось отправить заставку: %s", e)
             await message.answer(caption, reply_markup=markup)
-        await message.answer("Кнопки снизу — быстрый доступ к пульту, брендам и избранному.", reply_markup=REPLY_KB)
+        await message.answer("Снизу — быстрый доступ: главная, лента и бренды.", reply_markup=REPLY_KB)
         await db.update_settings(user.id)  # отмечаем, что приветствие уже было
         return
 
     await message.answer(texts.WELCOME_BACK.format(name=name), reply_markup=REPLY_KB)
-    await send_home(message, db)
+    await send_home(message, db, animated=True)
 
 
 @router.callback_query(F.data.startswith("ob:"))
@@ -170,6 +171,5 @@ async def cb_trial(callback: CallbackQuery, db: Database) -> None:
     text = texts.TRIAL_STARTED.format(until=human_date(until), brands=plans.TRIAL.brands)
     await callback.message.answer(
         text,
-        reply_markup=kb([btn("⭐ Готовый набор — в один клик", "b:preset")],
-                        [btn("➕ Выбрать бренды самому", "b:add:0")]),
+        reply_markup=kb([btn("➕ Выбрать бренды", "b:add:0")]),
     )

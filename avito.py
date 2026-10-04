@@ -105,6 +105,7 @@ class AvitoPrices:
                     },
                 },
                 timeout_secs=180,
+                logger=None,  # не дублировать логи актора в логи бота
             )
             dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "default_dataset_id", None)
             if not dataset_id:

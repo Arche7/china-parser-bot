@@ -15,7 +15,8 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
+from aiohttp import web
 
 import config
 import handlers
@@ -39,7 +40,7 @@ log = logging.getLogger("bot")
 async def set_profile(bot: Bot) -> None:
     """Меню команд и описание бота (то, что видно до нажатия «Старт»)."""
     await bot.set_my_commands([
-        BotCommand(command="start", description="Пульт"),
+        BotCommand(command="start", description="Главная"),
         BotCommand(command="add", description="Добавить бренд"),
         BotCommand(command="list", description="Мои бренды"),
         BotCommand(command="help", description="Как это работает"),
@@ -97,6 +98,7 @@ async def main() -> None:
         ),
         Fen95Source(),
     ]
+    sources_map = {s.name: s for s in sources}
 
     bot = Bot(
         token=config.BOT_TOKEN,
@@ -114,11 +116,26 @@ async def main() -> None:
     dp["db"] = db
     dp["monitor"] = monitor
     dp["avito"] = avito
+    dp["sources"] = sources_map
     dp.include_router(handlers.setup(db))
 
     await rates.refresh()
     await set_profile(bot)
     await seed_admin_brands(db)
+
+    # Мини-приложение HUNTR: веб-сервер в том же процессе (Railway даёт PORT и домен)
+    from webapp.server import create_app
+    runner = web.AppRunner(create_app(db, bot, monitor, avito, sources_map))
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", config.WEB_PORT).start()
+    log.info("Приложение HUNTR слушает порт %s, адрес: %s", config.WEB_PORT, config.WEBAPP_URL or "домен не задан")
+    if config.WEBAPP_URL:
+        try:
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+                text=config.BRAND_NAME, web_app=WebAppInfo(url=config.WEBAPP_URL)))
+        except Exception as e:
+            log.warning("Не удалось поставить кнопку приложения: %s", e)
+
     monitor_task = asyncio.create_task(monitor.run_forever())
 
     me = await bot.get_me()
@@ -128,6 +145,7 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         monitor_task.cancel()
+        await runner.cleanup()
         for source in sources:
             await source.close()
         await db.close()

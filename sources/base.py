@@ -47,6 +47,10 @@ class Source:
         """
         raise NotImplementedError
 
+    async def details(self, item_id: str) -> dict | None:
+        """Полная карточка объявления (фото, описание, продавец). None — если площадка не умеет."""
+        return None
+
     async def close(self) -> None:
         """Освободить ресурсы (если нужно)."""
         return None

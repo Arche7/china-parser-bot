@@ -1,7 +1,7 @@
 """
 Общие помощники для всех экранов бота.
 
-Главная идея интерфейса: у пользователя есть одно сообщение-«пульт»,
+Главная идея интерфейса: у пользователя есть одно сообщение-«главная»,
 и почти все кнопки не шлют новые сообщения, а меняют это же сообщение.
 Получается как приложение: экраны сменяют друг друга, чат не засоряется.
 """
@@ -31,12 +31,17 @@ from db import Database
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
 
-# Нижняя клавиатура — всегда под рукой, даже если пульт уехал вверх
-BTN_HOME = "🏠 Пульт"
-BTN_BRANDS = "🎯 Бренды"
-BTN_FAVS = "⭐ Избранное"
+# Нижняя клавиатура — всегда под рукой, даже если главная уехала вверх
+BTN_HOME = "Главная"
+BTN_FEED = "Лента"
+BTN_BRANDS = "Бренды"
+BTN_FAVS = "Избранное"
+# Старые подписи кнопок — чтобы клавиатура у старых пользователей тоже работала
+OLD_HOME = {"🏠 Пульт", BTN_HOME}
+OLD_BRANDS = {"🎯 Бренды", BTN_BRANDS}
+OLD_FAVS = {"⭐ Избранное", BTN_FAVS}
 REPLY_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_BRANDS), KeyboardButton(text=BTN_FAVS)]],
+    keyboard=[[KeyboardButton(text=BTN_HOME), KeyboardButton(text=BTN_FEED), KeyboardButton(text=BTN_BRANDS)]],
     resize_keyboard=True,
     is_persistent=True,
 )
@@ -90,7 +95,7 @@ def kb(*rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup:
 
 
 def back_home() -> list[InlineKeyboardButton]:
-    return [btn("‹ Пульт", "h:home")]
+    return [btn("‹ Главная", "h:home")]
 
 
 def support_url() -> str | None:
@@ -157,6 +162,14 @@ async def show(event: CallbackQuery | Message, text: str, markup: InlineKeyboard
         if msg and msg.text is not None:
             try:
                 await msg.edit_text(text, reply_markup=markup)
+                return msg
+            except TelegramBadRequest as e:
+                if "not modified" in str(e):
+                    return msg
+        elif msg and (msg.photo or msg.animation) and len(text) <= 1024:
+            # Экран с картинкой (главная, лента): меняем подпись, картинка остаётся
+            try:
+                await msg.edit_caption(caption=text, reply_markup=markup)
                 return msg
             except TelegramBadRequest as e:
                 if "not modified" in str(e):

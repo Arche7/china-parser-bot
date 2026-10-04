@@ -126,10 +126,10 @@ async def got_payment(message: Message, bot: Bot, db: Database) -> None:
         text = (f"🎉 <b>{plan.title}</b> подключён до {human_date(until)}!\n\n"
                 f"Брендов: до {plan.brands} · проверка каждые {plan.interval_min} мин · "
                 f"легит-чеков: {plan.legit_checks} в месяц.\n\n"
-                "Открой пульт и добавь бренды — первые находки покажу сразу.")
+                "Добавь бренды — первые находки покажу сразу.")
     await message.answer(text, reply_markup=REPLY_KB)
     await message.answer("Что дальше?", reply_markup=kb([btn("➕ Добавить бренды", "b:add:0")],
-                                                        [btn("🏠 Открыть пульт", "h:home")]))
+                                                        [btn("Главная", "h:home")]))
     await reward_referrer(bot, db, user_id)
     for admin in config.ADMIN_IDS:
         try:

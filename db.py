@@ -12,6 +12,7 @@
   usage      — сколько легит-чеков/сравнений цен потрачено в этом месяце
   jobs       — расписание проверок по каждому бренду (умная экономия)
   avito_cache — цены с Авито, чтобы не платить за один и тот же запрос
+  feed       — лента: что нашлось для каждого пользователя (сводки и просмотр по разделам)
   payments   — оплаты звёздами (нужны для возвратов и отмены старой подписки)
 
 Старая база (от прошлой версии бота) обновляется сама при запуске:
@@ -112,6 +113,18 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feed (
+    user_id     INTEGER NOT NULL,
+    source      TEXT NOT NULL,
+    item_id     TEXT NOT NULL,
+    keyword     TEXT NOT NULL,                -- бренд (канонический ключ)
+    grp         TEXT NOT NULL,                -- Одежда / Обувь / Сумки / Аксессуары / Другое
+    created_at  INTEGER NOT NULL,
+    notified    INTEGER NOT NULL DEFAULT 0,   -- 1 = уже попало в сводку или пришло отдельно
+    PRIMARY KEY (user_id, source, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feed_user_time ON feed (user_id, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_watches_keyword ON watches (keyword);
 CREATE INDEX IF NOT EXISTS idx_sent_time ON sent (sent_at);
 CREATE INDEX IF NOT EXISTS idx_seen_time ON seen (first_seen);
@@ -137,6 +150,8 @@ DEFAULT_SETTINGS = {
     "quiet": False,             # тихие часы 00:00–08:00 (без звука)
     "delivery": config.DELIVERY_RUB_PER_KG,   # ₽ за кг
     "fee": config.BUYER_FEE_PCT,              # комиссия байера, %
+    "notify": "digest",         # digest — сводкой, instant — каждое сразу, off — только лента
+    "every": 30,                # как часто присылать сводку, минут
 }
 
 
@@ -626,6 +641,88 @@ class Database:
         )
         await self.conn.commit()
 
+    # ---------------- Лента ----------------
+
+    async def add_feed(self, user_id: int, source: str, item_id: str, keyword: str,
+                       grp: str, notified: bool = False) -> bool:
+        cur = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO feed (user_id, source, item_id, keyword, grp, created_at, notified)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, source, item_id, keyword, grp, _now(), 1 if notified else 0),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def users_with_pending(self) -> list[int]:
+        cur = await self.conn.execute("SELECT DISTINCT user_id FROM feed WHERE notified = 0")
+        return [row[0] for row in await cur.fetchall()]
+
+    async def pending_feed(self, user_id: int) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM feed WHERE user_id = ? AND notified = 0 ORDER BY created_at DESC", (user_id,)
+        )
+        return list(await cur.fetchall())
+
+    async def mark_notified(self, user_id: int) -> None:
+        await self.conn.execute("UPDATE feed SET notified = 1 WHERE user_id = ? AND notified = 0", (user_id,))
+        await self.conn.commit()
+
+    @staticmethod
+    def _feed_where(brand: str | None, grp: str | None, since: int | None) -> tuple[str, list]:
+        sql, args = "", []
+        if brand:
+            sql += " AND f.keyword = ?"
+            args.append(brand)
+        if grp:
+            sql += " AND f.grp = ?"
+            args.append(grp)
+        if since:
+            sql += " AND f.created_at >= ?"
+            args.append(since)
+        return sql, args
+
+    async def feed_page(self, user_id: int, brand: str | None = None, grp: str | None = None,
+                        since: int | None = None, limit: int = 30, offset: int = 0) -> list[dict]:
+        """Лента пользователя (новые сверху) вместе с данными объявлений."""
+        where, args = self._feed_where(brand, grp, since)
+        cur = await self.conn.execute(
+            f"""
+            SELECT f.source, f.item_id, f.keyword, f.grp, f.created_at, l.data,
+                   EXISTS(SELECT 1 FROM favorites v WHERE v.user_id = f.user_id
+                          AND v.source = f.source AND v.item_id = f.item_id) AS fav
+            FROM feed f JOIN listings l ON l.source = f.source AND l.item_id = f.item_id
+            WHERE f.user_id = ?{where}
+            ORDER BY f.created_at DESC, f.rowid DESC LIMIT ? OFFSET ?
+            """,
+            (user_id, *args, limit, offset),
+        )
+        rows = []
+        for r in await cur.fetchall():
+            rows.append({"source": r["source"], "item_id": r["item_id"], "keyword": r["keyword"],
+                         "grp": r["grp"], "found_at": r["created_at"], "fav": bool(r["fav"]),
+                         "data": json.loads(r["data"])})
+        return rows
+
+    async def feed_count(self, user_id: int, brand: str | None = None, grp: str | None = None,
+                         since: int | None = None) -> int:
+        where, args = self._feed_where(brand, grp, since)
+        cur = await self.conn.execute(f"SELECT COUNT(*) FROM feed f WHERE f.user_id = ?{where}", (user_id, *args))
+        return (await cur.fetchone())[0]
+
+    async def feed_facets(self, user_id: int, since: int | None = None) -> dict:
+        """Сколько объявлений по брендам и разделам — для фильтров."""
+        where, args = self._feed_where(None, None, since)
+        result = {"brands": {}, "groups": {}}
+        for column, key in (("keyword", "brands"), ("grp", "groups")):
+            cur = await self.conn.execute(
+                f"SELECT f.{column}, COUNT(*) FROM feed f WHERE f.user_id = ?{where} GROUP BY f.{column} ORDER BY 2 DESC",
+                (user_id, *args),
+            )
+            result[key] = {row[0]: row[1] for row in await cur.fetchall()}
+        return result
+
     # ---------------- Оплаты ----------------
 
     async def add_payment(self, charge_id: str, user_id: int, plan: str, months: int,
@@ -684,6 +781,7 @@ class Database:
         border = _now() - older_than_days * 86400
         await self.conn.execute("DELETE FROM seen WHERE first_seen < ?", (border,))
         await self.conn.execute("DELETE FROM sent WHERE sent_at < ?", (border,))
+        await self.conn.execute("DELETE FROM feed WHERE created_at < ?", (_now() - 14 * 86400,))
         # Объявления из избранного не удаляем
         await self.conn.execute(
             """

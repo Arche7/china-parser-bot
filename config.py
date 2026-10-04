@@ -76,7 +76,12 @@ APIFY_PRICE_PER_1000: float = float(os.getenv("APIFY_PRICE_PER_1000", "1.6"))
 # Как называется продукт в сообщениях
 BRAND_NAME: str = os.getenv("BRAND_NAME", "HUNTR").strip()
 # Ссылка на мини-приложение HUNTR (https://...). Пока пусто — кнопки нет.
-WEBAPP_URL: str = os.getenv("WEBAPP_URL", "").strip()
+# Если не задано, но у сервиса на Railway есть публичный домен — берём его сами
+WEBAPP_URL: str = os.getenv("WEBAPP_URL", "").strip() or (
+    f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN').strip()}/app" if os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip() else ""
+)
+# Порт веб-сервера приложения (Railway подставляет PORT сам)
+WEB_PORT: int = int(os.getenv("PORT", "8080"))
 # Ник поддержки без @ — куда писать по оплате и вопросам
 SUPPORT_USERNAME: str = os.getenv("SUPPORT_USERNAME", "").strip().lstrip("@")
 # Сколько дней длится бесплатный пробный период (0 — выключить)
