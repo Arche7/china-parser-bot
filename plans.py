@@ -18,6 +18,17 @@
 
 from dataclasses import dataclass, field
 
+import config
+
+# Пока Авито выключено (config.AVITO_ENABLED), в тарифах не обещаем «сравнения с Авито»
+_AV = config.AVITO_ENABLED
+
+
+def _checks(legit: int, avito: int) -> str:
+    """'10 легит-чеков · 20 сравнений с Авито' или только легит-чеки, если Авито выключено."""
+    text = f"{legit} {'легит-чек' if legit == 1 else 'легит-чека' if 2 <= legit <= 4 else 'легит-чеков'}"
+    return text + (f" · {avito} сравнений с Авито" if _AV else "")
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -68,7 +79,7 @@ TRIAL = Plan(
     price_checks=2,
     tagline="2 дня, чтобы увидеть первые находки",
     perks=["2 бренда из каталога", "проверка раз в час", "находки сразу или сводкой",
-           "1 легит-чек", "2 сравнения с Авито"],
+           "1 легит-чек"] + (["2 сравнения с Авито"] if _AV else []),
     instant=True,
     all_photos=True,
     feed_days=3,
@@ -90,7 +101,7 @@ START = Plan(
         "проверка каждые 30 мин",
         "находки сводкой — раз в 30 мин или реже",
         "фильтр подделок и мусора, калькулятор себестоимости",
-        "10 легит-чеков · 20 сравнений с Авито",
+        _checks(10, 20),
         "лента за 3 дня",
     ],
     instant=False,
@@ -116,7 +127,7 @@ PRO = Plan(
         "каталог — каждые 15 мин, вдвое быстрее START",
         "⚡ находка сразу, в ту же минуту — не ждёшь сводку",
         "все фото вещи, а не только обложка",
-        "40 легит-чеков · 60 сравнений с Авито",
+        _checks(40, 60),
         "лента за 7 дней",
     ],
     instant=True,
@@ -142,7 +153,7 @@ ELITE = Plan(
         "🤖 ИИ-помощник по переписке с продавцом: перевод скринов, ответ на китайском, торг",
         "📸 уточняющий легит-чек по твоим фото — после каждого фото вердикт точнее",
         "⚡ находка сразу и первым — раньше подписчиков START и PRO",
-        "150 легит-чеков · 300 сравнений с Авито · лента за 14 дней",
+        _checks(150, 300) + " · лента за 14 дней",
         "ранний доступ к новым площадкам (95分) и личная поддержка",
     ],
     instant=True,
@@ -209,7 +220,7 @@ def comparison_rows() -> list[dict]:
         {"label": "🤖 ИИ-помощник продавца", "values": [f"{p.assistant}/мес" if p.assistant else "—"
                                                       for p in PAID_PLANS]},
         {"label": "Легит-чеков", "values": [str(p.legit_checks) for p in PAID_PLANS]},
-        {"label": "Сравнений с Авито", "values": [str(p.price_checks) for p in PAID_PLANS]},
+    ] + ([{"label": "Сравнений с Авито", "values": [str(p.price_checks) for p in PAID_PLANS]}] if _AV else []) + [
         {"label": "Лента хранит", "values": [f"{p.feed_days} дн." for p in PAID_PLANS]},
     ]
 

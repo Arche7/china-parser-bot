@@ -131,7 +131,11 @@ AI_ASSISTANT_MODEL: str = os.getenv("AI_ASSISTANT_MODEL", "").strip() or AI_VISI
 # --- Сравнение цен с Авито ---
 # Официальный API Авито не умеет искать чужие объявления, поэтому
 # цены берём через актор на Apify (тот же APIFY_TOKEN).
-AVITO_ENABLED: bool = os.getenv("AVITO_ENABLED", "1").strip() not in ("0", "false", "no", "")
+# ВЫКЛЮЧЕНО по умолчанию (октябрь 2026): Авито отвечает 429 на запросы обоих акторов Apify
+# даже через жилые российские прокси. Пока выключено — бот и приложение не обещают
+# «сравнения с Авито», а в «Выгоде» остаётся расчёт себестоимости и кнопка «Открыть поиск на Авито».
+# Включить снова: переменная AVITO_ENABLED=1 на Railway (и проверить /avitotest).
+AVITO_ENABLED: bool = os.getenv("AVITO_ENABLED", "0").strip() not in ("0", "false", "no", "")
 AVITO_ACTOR_ID: str = os.getenv("AVITO_ACTOR_ID", "ahaham_bytiz/avito-scraper").strip()
 AVITO_MAX_ITEMS: int = int(os.getenv("AVITO_MAX_ITEMS", "30"))
 # Сколько раз пробовать основной актор (каждый раз — новый IP), если Авито ответил 429

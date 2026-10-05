@@ -785,10 +785,10 @@ function phrasesHTML() {
 }
 function profitBox(k) {
   const st = ist(k), it = S.items[k];
-  if (st.pstate === 'loading') return `<h3>Выгода</h3><div class="sub" style="margin-bottom:10px">Считаю себестоимость и смотрю цены на Авито…</div><div class="shimmer" style="height:12px;border-radius:6px;margin-bottom:8px"></div><div class="shimmer" style="height:12px;border-radius:6px;width:70%"></div>`;
+  if (st.pstate === 'loading') return `<h3>Выгода</h3><div class="sub" style="margin-bottom:10px">${S.me && S.me.avito ? 'Считаю себестоимость и смотрю цены на Авито…' : 'Считаю себестоимость…'}</div><div class="shimmer" style="height:12px;border-radius:6px;margin-bottom:8px"></div><div class="shimmer" style="height:12px;border-radius:6px;width:70%"></div>`;
   if (st.pstate === 'limit') return `<h3>Выгода</h3><div class="txt">Сравнения с Авито на этот месяц закончились. На тарифе выше их больше.</div><button class="btn sm ghost press" style="margin-top:12px" data-act="toPlans">Тарифы</button>`;
   const r = st.profit;
-  if (!r) return `<div class="between"><div><div style="font-weight:800">Выгода</div><div class="sub" style="margin-top:2px;font-weight:500">Себестоимость в России и цена на Авито</div></div>
+  if (!r) return `<div class="between"><div><div style="font-weight:800">Выгода</div><div class="sub" style="margin-top:2px;font-weight:500">${S.me && S.me.avito ? 'Себестоимость в России и цена на Авито' : 'Себестоимость в России с доставкой и байером'}</div></div>
     <button class="btn sm ghost press" data-act="profit" data-key="${esc(k)}"${it.price == null ? ' disabled' : ''}>Посчитать</button></div>`;
   const c = r.cost, m = r.market || {};
   let html = '<h3>Выгода</h3>';
@@ -817,10 +817,10 @@ function profitBox(k) {
     }).join('')}</div>`;
     if (m.url) html += `<button class="btn sm ghost press" style="margin-top:10px" data-act="link" data-url="${esc(m.url)}">Все на Авито ↗</button>`;
   } else {
-    html += `<div class="mline" style="margin-top:10px;color:var(--muted)">Мало похожих на Авито — посмотри вручную</div>`;
-    if (m.url) html += `<button class="btn sm ghost press" style="margin-top:10px" data-act="link" data-url="${esc(m.url)}">Открыть Авито ↗</button>`;
+    html += `<div class="mline" style="margin-top:10px;color:var(--muted)">${S.me && S.me.avito ? 'Мало похожих на Авито — посмотри вручную' : 'Сравни с ценами в России — поиск похожих откроется на Авито'}</div>`;
+    if (m.url) html += `<button class="btn sm ghost press" style="margin-top:10px" data-act="link" data-url="${esc(m.url)}">Похожие на Авито ↗</button>`;
   }
-  if (r.left != null && r.left < 1000) html += `<div class="foot">Осталось сравнений в этом месяце: ${num(r.left)}</div>`;
+  if (S.me && S.me.avito && r.left != null && r.left < 1000) html += `<div class="foot">Осталось сравнений в этом месяце: ${num(r.left)}</div>`;
   return html;
 }
 const RISK = { low: ['низкий', 'lime'], medium: ['средний', 'warn'], high: ['высокий', 'bad'] };
@@ -1078,7 +1078,7 @@ function profileScreen() {
       <div class="between"><div style="font-weight:800;font-size:18px">${esc(p.title)}${p.until ? ' · до ' + dateRu(p.until) : ''}</div><div class="badge">${badge}</div></div>
       ${meter('Бренды', me.counts.brands, p.brands, true)}
       ${meter('Легит-чеки', p.legit_left, p.legit_checks)}
-      ${meter('Сравнения с Авито', p.price_left, p.price_checks)}
+      ${me.avito ? meter('Сравнения с Авито', p.price_left, p.price_checks) : ''}
       ${p.assistant ? meter('ИИ-помощник, сообщений', p.assistant_left, p.assistant) : ''}
     </div>
     <button class="glass press aibtn rise" data-act="assistant">${svg(ICON.chat, 22)}<span><b>ИИ-помощник по переписке</b><small>Перевод скринов, ответ на китайском, торг, риск подделки по фото</small></span>${p.assistant ? '' : '<span class="elite">ELITE</span>'}</button>
@@ -1157,7 +1157,7 @@ function paywall() {
   const me = S.me;
   const B = [[ICON.bolt, 'Первым видишь новые вещи', 'Радар проверяет Goofish каждые 10–30 минут и сразу присылает находки.'],
     [ICON.shield, 'Без подделок', 'Отсекаем копии по словам-маркерам, а ИИ оценивает фото бирок и швов.'],
-    [ICON.coin, 'Сразу видна выгода', 'Себестоимость с доставкой и байером против медианы на Авито.']];
+    [ICON.coin, 'Сразу видна выгода', 'Себестоимость в России с доставкой и комиссией байера — до того, как напишешь продавцу.']];
   return `<div class="full scroll" style="background:var(--bg)"><div class="bg-glow"></div><div class="bg-grid"></div>
     <div class="col screen" style="position:relative;gap:18px">
       <div class="logo">${LOGO(34)}<b>HUNTR</b></div>

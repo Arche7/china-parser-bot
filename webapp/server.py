@@ -229,6 +229,7 @@ async def api_me(request: web.Request) -> web.Response:
         "settings": {**{k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
                      "notify": mode, "every": every},
         "bot": await _bot_username(request),
+        "avito": config.AVITO_ENABLED,   # выключено — приложение не обещает сравнение с Авито
         "paused": bool(user and user["paused"]),
         "rate": rates.cny_rub(),
     })

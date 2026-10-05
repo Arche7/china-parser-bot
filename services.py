@@ -84,7 +84,9 @@ async def profit_for(db: Database, avito: AvitoPrices, user_id: int, source: str
                                 config.AVITO_CACHE_HOURS * 3600)
     if cached is not None and not cached.get("median"):
         cached = None   # старый пустой результат — спросим Авито заново
-    if cached is None and await quota_left(db, user_id, "price") <= 0:
+    # Лимит «сравнений с Авито» тратим, только когда Авито включено: без него «Выгода» —
+    # это бесплатный калькулятор себестоимости
+    if config.AVITO_ENABLED and cached is None and await quota_left(db, user_id, "price") <= 0:
         raise LimitReached("price")
     market = await avito.market(keyword, category)
     if cached is None and market and market.get("median"):

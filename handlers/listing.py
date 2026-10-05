@@ -14,6 +14,7 @@ from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 import ai
 import brands
 import cards
+import config
 import services
 from avito import AvitoPrices
 from db import Database
@@ -96,7 +97,8 @@ async def cb_profit(callback: CallbackQuery, db: Database, avito: AvitoPrices) -
     _, source, item_id = _ref(callback.data)
     user_id = callback.from_user.id
     await safe_answer(callback, "Считаю…")
-    wait = await callback.message.reply("📊 Считаю себестоимость и смотрю цены на Авито…")
+    wait = await callback.message.reply("📊 Считаю себестоимость и смотрю цены на Авито…" if config.AVITO_ENABLED
+                                        else "📊 Считаю себестоимость…")
     try:
         r = await services.profit_for(db, avito, user_id, source, item_id)
     except LookupError:
@@ -108,7 +110,7 @@ async def cb_profit(callback: CallbackQuery, db: Database, avito: AvitoPrices) -
         return
     settings = await db.get_settings(user_id)
     text = cards.profit_text(r["data"], r["keyword"], settings, r["market"])
-    if r["market"] and r["market"].get("median") is not None and r["left"] < 1000:
+    if config.AVITO_ENABLED and r["market"] and r["market"].get("median") is not None and r["left"] < 1000:
         text += f"\n<i>Осталось сравнений в этом месяце: {r['left']}</i>"
     rows = []
     if r["market"]:

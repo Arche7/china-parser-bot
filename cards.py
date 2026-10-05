@@ -192,7 +192,8 @@ def profit_text(data: dict, keyword: str, settings: dict, market: dict | None) -
         lines += [
             "",
             "Цены в России по этой вещи посчитать не вышло — открой поиск на Авито "
-            "по кнопке ниже и сравни сам.",
+            "по кнопке ниже и сравни сам." if config.AVITO_ENABLED else
+            "Сравни с ценами в России: кнопка ниже откроет поиск похожих вещей на Авито.",
         ]
     return "\n".join(lines)
 
@@ -347,7 +348,8 @@ def viewer_keyboard(item: dict, ftype: str, fval: str, idx: int, total: int) -> 
         nav,
         [InlineKeyboardButton(text="Открыть на Goofish ↗", url=item["data"]["url"])],
         [InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
-         InlineKeyboardButton(text="📊 Выгода и Авито", callback_data=f"l:pr:{ref}")],
+         InlineKeyboardButton(text="📊 Выгода и Авито" if config.AVITO_ENABLED else "📊 Выгода",
+                              callback_data=f"l:pr:{ref}")],
         [InlineKeyboardButton(text="★ В избранном" if item["fav"] else "☆ В избранное",
                               callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
          InlineKeyboardButton(text="💬 Продавцу", callback_data=f"as:l:{ref}")],
