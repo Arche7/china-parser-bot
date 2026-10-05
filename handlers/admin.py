@@ -8,6 +8,7 @@
   /users                     — пользователи
   /stats                     — статистика и прогноз расходов
   /payments                  — последние оплаты звёздами (handlers/payments.py)
+  /export                    — все оплаты файлом для таблицы «HUNTR-финансы»
   /refund <id> <charge_id>   — вернуть звёзды (handlers/payments.py)
   /broadcast                 — ответь этой командой на сообщение, чтобы разослать
                                 его всем пользователям (спросит подтверждение)
@@ -23,6 +24,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
 import ai
+import apify_guard
 import config
 import plans
 from avito import AvitoPrices
@@ -157,6 +159,7 @@ async def cmd_avitotest(message: Message, command: CommandObject, avito: AvitoPr
     parts = query.split()
     await message.answer(f"Проверяю Авито: «{html.escape(query)}»… (до 2 минут)")
     keyword, category = " ".join(parts[:-1]) or query, parts[-1] if len(parts) > 1 else None
+    apify_guard.clear()   # проверка вручную — пробуем по-настоящему, даже если недавно был лимит
     market = await avito.market(keyword, category)
     if not avito.enabled:
         await message.answer("Авито выключено (AVITO_ENABLED=0).")
@@ -164,6 +167,9 @@ async def cmd_avitotest(message: Message, command: CommandObject, avito: AvitoPr
         await message.answer(f"✅ Работает: {market['count']} цен, медиана {market['median']:.0f} ₽ "
                              f"({market['p25']:.0f}–{market['p75']:.0f} ₽)\n{market['url']}")
     else:
+        if avito.last_log == "APIFY_LIMIT" or apify_guard.blocked():
+            await message.answer(apify_guard.alert_text())
+            return
         tail = html.escape(" \n".join((avito.last_log or "").strip().splitlines()[-12:]))[-3000:]
         await message.answer(f"⚠️ Цен не получил (нашлось: {(market or {}).get('count', 0)}).\n\n"
                              + (f"<b>Конец лога актора:</b>\n<pre>{tail}</pre>" if tail else

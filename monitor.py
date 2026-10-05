@@ -38,6 +38,7 @@ from aiogram.exceptions import (
 )
 
 import ai
+import apify_guard
 import brands
 import cards
 import config
@@ -179,6 +180,8 @@ class Monitor:
         return min(watch_interval(w) for w in watches)
 
     async def check_due(self) -> None:
+        if apify_guard.blocked():
+            return  # Apify недавно отказал по лимиту — ждём, а не долбим его каждые 5 минут
         jobs = self.group_watches(await self.allowed_watches())
         now = time.time()
         due = []
@@ -212,10 +215,24 @@ class Monitor:
                 return None
             except Exception as e:
                 log.warning("%s: ошибка поиска «%s»: %s", source.title, query, e)
+                if apify_guard.note(e):
+                    await self.alert_apify_limit()
                 return None
+        apify_guard.clear()
         self.searches += 1
         self.items_fetched += len(listings)
         return listings
+
+    async def alert_apify_limit(self) -> None:
+        """Написать админу, что у Apify закончился лимит (не чаще раза в 6 часов)."""
+        if not apify_guard.should_alert():
+            return
+        log.error("Apify: лимит исчерпан — %s", apify_guard.last_error)
+        for admin in config.ADMIN_IDS:
+            try:
+                await self.bot.send_message(admin, apify_guard.alert_text())
+            except Exception:
+                pass
 
     async def check_job(self, source: Source, keyword: str, watches: list) -> list[Listing]:
         """

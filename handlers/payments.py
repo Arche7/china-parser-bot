@@ -11,6 +11,7 @@
                         у ботов, которые продают за звёзды.
   /refund <id> <charge_id> — админ: вернуть звёзды и закрыть доступ.
   /payments            — админ: последние оплаты.
+  /export              — админ: все оплаты CSV-файлом (для Excel-таблицы).
 """
 
 import html
@@ -20,7 +21,7 @@ from datetime import datetime
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message, PreCheckoutQuery
+from aiogram.types import BufferedInputFile, Message, PreCheckoutQuery
 
 import config
 import plans
@@ -154,6 +155,12 @@ async def got_own_payment(message: Message, bot: Bot, db: Database, slot_id: str
         await refund_own(bot, db, user_id, charge_id)
         await message.answer("↩️ Эту ссылку уже оплатили раньше — второй платёж вернул. "
                              "Чтобы взять ещё одно место, открой «+1 свой бренд» в боте заново.")
+        return
+    # Открыли несколько счетов сразу и оплатили все — сверх лимита возвращаем
+    if not renewal and await db.own_slots(user_id) >= plans.OWN_ADDON_MAX:
+        await refund_own(bot, db, user_id, charge_id)
+        await message.answer(f"↩️ Больше {plans.OWN_ADDON_MAX} своих брендов докупить нельзя — "
+                             "этот платёж вернул, подписку отменил.")
         return
     # +1 день запаса, чтобы слот не пропал на минуты между окончанием и продлением
     until = (payment.subscription_expiration_date or int(time.time()) + 30 * 86400) + 86400
@@ -301,6 +308,29 @@ async def cmd_refund(message: Message, command: CommandObject, bot: Bot, db: Dat
     await db.revoke(user_id)
     await message.answer(f"↩️ Звёзды возвращены, доступ <code>{user_id}</code> закрыт "
                          "(подписки на свои бренды тоже отменены).")
+
+
+@router.message(Command("export"))
+async def cmd_export(message: Message, db: Database) -> None:
+    """Админ: все оплаты файлом — для таблицы «HUNTR-финансы» (лист «Доходы», колонки A–G)."""
+    if not is_admin(message.from_user.id):
+        return
+    rows = await db.all_payments()
+    if not rows:
+        await message.answer("Оплат пока нет — выгружать нечего.")
+        return
+    lines = ["Дата оплаты;ID пользователя;Что купил;Срок, мес.;Звёзд;Возврат?;charge_id"]
+    for r in rows:
+        title = "+1 свой бренд" if r["plan"] == "own" else plans.ALL_PLANS.get(r["plan"], plans.PRO).title
+        when = datetime.fromtimestamp(r["created_at"]).strftime("%d.%m.%Y")
+        lines.append(f"{when};{r['user_id']};{title};{r['months']};{r['stars']};"
+                     f"{'да' if r['refunded'] else 'нет'};{r['charge_id']}")
+    data = ("\n".join(lines) + "\n").encode("utf-8-sig")   # BOM — чтобы Excel понял кириллицу
+    await message.answer_document(
+        BufferedInputFile(data, filename=f"huntr-oplaty-{datetime.now():%Y-%m-%d}.csv"),
+        caption=(f"📤 Оплат: {len(rows)}. Открой файл, выдели строки (без заголовка), скопируй и вставь "
+                 "в таблицу «HUNTR-финансы» на лист «Доходы» в первую пустую строку, колонка A."),
+    )
 
 
 @router.message(Command("payments"))

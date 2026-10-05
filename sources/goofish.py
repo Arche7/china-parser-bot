@@ -14,10 +14,13 @@ Goofish (闲鱼, Xianyu) — через платный актор на Apify.
 в нужном диапазоне, и мы не платим за лишние.
 """
 
+import json
 import logging
 import re
 
 from apify_client import ApifyClientAsync
+
+import apify_guard
 
 from sources.base import Listing, Source
 
@@ -63,6 +66,59 @@ def item_status(raw: dict) -> str | None:
     if raw.get("isSold") is True or raw.get("sold") is True:
         return "sold"
     return None
+
+# Версия формата полной карточки: старые карточки (без всех фото) загрузим заново один раз
+DETAIL_VERSION = 2
+
+_IMAGE_KEYS = ("images", "imageUrls", "image_urls", "imgs", "imgUrls", "pics", "picList", "picUrls",
+               "imageList", "imageInfos", "photos", "gallery", "mainPics")
+_URL_KEYS = ("url", "src", "imageUrl", "imgUrl", "picUrl", "photoSearchUrl", "originalUrl", "image")
+_IMG_RE = re.compile(r"(?:https?:)?//[^\s\"'<>]+?\.(?:jpe?g|png|webp|heic)(?:_[^\s\"'<>]*)?", re.I)
+
+
+def _norm_url(value) -> str | None:
+    if isinstance(value, dict):
+        for k in _URL_KEYS:
+            if isinstance(value.get(k), str):
+                return _norm_url(value[k])
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if value.startswith("//"):
+        value = "https:" + value
+    return value if value.startswith("http") else None
+
+
+def collect_images(raw: dict) -> list[str]:
+    """
+    Все фото из ответа актора. Разные версии актора кладут их по-разному:
+    списком строк, списком словарей {"url": ...}, под разными ключами —
+    поэтому собираем отовсюду, а в крайнем случае ищем ссылки на картинки в тексте.
+    """
+    found: list[str] = []
+
+    def add(value) -> None:
+        url = _norm_url(value)
+        if url and url not in found:
+            found.append(url)
+
+    for key in _IMAGE_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str):
+            value = [v for v in re.split(r"[,\s]+", value) if v]
+        if isinstance(value, list):
+            for v in value:
+                add(v)
+    if len(found) <= 1:
+        # Запасной путь: любые ссылки на картинки alicdn внутри ответа
+        for url in _IMG_RE.findall(json.dumps(raw, ensure_ascii=False)):
+            if ("alicdn" in url or "goofish" in url or "xianyu" in url) and "avatar" not in url.lower():
+                add(url)
+    for key in ("image", "mainImage", "coverImage", "picUrl"):
+        add(raw.get(key))
+    return found
+
 
 class GoofishSource(Source):
     name = "goofish"
@@ -153,6 +209,8 @@ class GoofishSource(Source):
         # формате — скорее всего объявление удалено.
         empty_runs = 0
         for start in ([{"url": url}], [url], [str(item_id)]):
+            if apify_guard.blocked():
+                return None
             try:
                 run = await self.client.actor(self.actor_id).call(
                     run_input={**base_input, "startUrls": start}, timeout_secs=180, logger=None
@@ -164,16 +222,19 @@ class GoofishSource(Source):
                 items = page.items if hasattr(page, "items") else page.get("items", [])
             except Exception as e:
                 log.warning("Goofish: не удалось получить карточку %s (%s): %s", item_id, type(start[0]).__name__, e)
+                if apify_guard.note(e):
+                    return None   # лимит Apify — остальные форматы тоже упадут
                 continue
             if not items:
                 empty_runs += 1
                 continue
             raw = items[0]
-            images = raw.get("images") or []
-            images = [("https:" + i if isinstance(i, str) and i.startswith("//") else i) for i in images if isinstance(i, str)]
+            images = collect_images(raw)
+            log.info("Goofish: карточка %s — фото: %d, поля: %s", item_id, len(images), ", ".join(list(raw)[:25]))
             seller = raw.get("seller") if isinstance(raw.get("seller"), dict) else {}
             stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
             return {
+                "v": DETAIL_VERSION,
                 "images": images[:9],
                 "description": str(raw.get("description") or "")[:1500],
                 "condition": raw.get("condition"),

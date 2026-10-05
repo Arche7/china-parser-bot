@@ -22,6 +22,7 @@ from urllib.parse import quote_plus
 
 from apify_client import ApifyClientAsync
 
+import apify_guard
 import brands
 import config
 from db import Database
@@ -145,6 +146,9 @@ class AvitoPrices:
 
     async def _run(self, start: list, proxy: dict, query: str) -> list:
         url = start[0]["url"] if isinstance(start[0], dict) else start[0]
+        if apify_guard.blocked():
+            self.last_log = "APIFY_LIMIT"
+            return []
         try:
             run = await self.client.actor(config.AVITO_ACTOR_ID).call(
                 run_input={
@@ -160,6 +164,10 @@ class AvitoPrices:
             )
         except Exception as e:
             log.warning("Авито: ошибка для «%s»: %s", query, e)
+            if apify_guard.note(e):
+                self.last_log = "APIFY_LIMIT"
+            else:
+                self.last_log = f"Ошибка запуска: {e}"
             return []
         if not run:
             log.warning("Авито: актор не вернул запуск для «%s»", query)

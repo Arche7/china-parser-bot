@@ -907,6 +907,10 @@ class Database:
         await self.conn.execute("UPDATE own_slots SET until = 0 WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
+    async def all_payments(self) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute("SELECT * FROM payments ORDER BY created_at")
+        return list(await cur.fetchall())
+
     async def stars_since(self, since: int) -> int:
         cur = await self.conn.execute(
             "SELECT COALESCE(SUM(stars), 0) FROM payments WHERE refunded = 0 AND created_at >= ?", (since,)

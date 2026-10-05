@@ -13,8 +13,10 @@
 """
 
 import logging
+import time
 
 import ai
+import apify_guard
 import brands
 import config
 import plans
@@ -22,6 +24,7 @@ import rates
 from avito import AvitoPrices
 from db import Database
 from decoder import decode
+from sources.goofish import DETAIL_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -180,17 +183,31 @@ def seller_lines(detail: dict | None) -> list[str]:
     return lines
 
 
+DETAIL_RETRY_SEC = 6 * 3600   # после неудачной загрузки карточки пробуем снова через 6 часов
+
+
 async def enrich(db: Database, sources: dict, keyword: str, source: str, item_id: str, data: dict) -> dict | None:
     """Полная карточка объявления (с кэшем в базе)."""
-    if data.get("detail") is not None:
-        return data["detail"] or None
+    cached = data.get("detail")
+    if isinstance(cached, dict) and cached and (cached.get("v", 0) >= DETAIL_VERSION or cached.get("status")):
+        return cached
+    if time.time() - data.get("detail_failed", 0) < DETAIL_RETRY_SEC:
+        return cached or None   # недавно не получилось — не платим за повтор каждую минуту
     src = sources.get(source)
     detail = await src.details(item_id) if src else None
-    data["detail"] = detail or {}
-    if detail and detail.get("status"):
+    if not detail:
+        # Не получилось (например, закончился лимит Apify) — НЕ запоминаем «фото нет»,
+        # попробуем ещё раз позже. Старую карточку, если была, оставляем.
+        if not apify_guard.blocked():
+            data["detail_failed"] = int(time.time())
+            await db.save_listing(source, item_id, keyword, data)
+        return cached or None
+    data["detail"] = detail
+    data.pop("detail_failed", None)
+    if detail.get("status"):
         data["status"] = detail["status"]   # продано / снято — уберём из ленты
     await db.save_listing(source, item_id, keyword, data)
-    return detail if detail and detail.get("images") is not None else (detail or None)
+    return detail
 
 
 async def legit_for(db: Database, sources: dict, user_id: int, source: str, item_id: str) -> dict:

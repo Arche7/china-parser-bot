@@ -12,6 +12,7 @@ from aiogram.utils.web_app import safe_parse_webapp_init_data
 
 import ai
 import brands
+import apify_guard
 import cards
 import config
 import decoder
@@ -22,6 +23,7 @@ import services
 from handlers.brands_ui import limit_problem, merge_old_variants
 from handlers.common import count_own, run_background, user_plan
 from handlers.plans_ui import _description, _title, own_addon_link, seats_left
+from sources.goofish import DETAIL_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +128,12 @@ def _images(data: dict) -> list[str]:
     return images[:9] or ([data["image"]] if data.get("image") else [])
 
 
+def _photos_loaded(data: dict) -> bool:
+    """Полная карточка уже загружена (все фото известны) — кнопку «Все фото» не показываем."""
+    detail = data.get("detail")
+    return isinstance(detail, dict) and (detail.get("v", 0) >= DETAIL_VERSION or bool(detail.get("status")))
+
+
 def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
          found_at: int | None = None, grp: str | None = None, seen: bool = True) -> dict:
     title = data.get("title") or ""
@@ -161,7 +169,7 @@ def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
         "status": data.get("status") or None,   # sold / gone — вещь уже продана или снята
         # Все фото объявления — если полная карточка уже загружалась (легит-чек или «Все фото»)
         "images": _images(data),
-        "photos_loaded": isinstance(data.get("detail"), dict) and bool(data.get("detail")),
+        "photos_loaded": _photos_loaded(data),
         "legit": {"score": legit.get("score"), "verdict": legit.get("verdict")} if isinstance(legit, dict) else None,
     }
 
@@ -420,9 +428,12 @@ async def api_photos(request: web.Request) -> web.Response:
     if not found:
         raise ApiError(404, "not_found")
     keyword, data = found
-    await services.enrich(db, request.app[SOURCES], keyword, source, item_id, data)
+    detail = await services.enrich(db, request.app[SOURCES], keyword, source, item_id, data)
     keyword, data = await db.get_listing(source, item_id)
-    return web.json_response({"images": _images(data), "status": data.get("status") or None})
+    error = None
+    if not detail:
+        error = "apify_limit" if apify_guard.blocked() else "unavailable"
+    return web.json_response({"images": _images(data), "status": data.get("status") or None, "error": error})
 
 
 async def api_plans(request: web.Request) -> web.Response:

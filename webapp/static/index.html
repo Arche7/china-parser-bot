@@ -724,10 +724,10 @@ async function loadPhotos(k) {
   st.ploading = true; rerenderGallery(k);
   try {
     const r = await api('/api/photos', { method: 'POST', body: { source: it.source, item_id: it.item_id } });
-    it.images = r.images || []; it.photos_loaded = true;
+    it.images = r.images || [];
     if (r.status) { it.status = r.status; const sb = $('statusBox'); if (sb) sb.innerHTML = statusBanner(it); }
-    if (it.images.length <= 1) toast('У этого объявления одно фото');
-    hapticNote('success');
+    if (r.error) toast(r.error === 'apify_limit' ? 'Фото сейчас не загрузить — сервис поиска на паузе. Попробуй позже' : 'Не получилось загрузить фото — попробуй позже');
+    else { it.photos_loaded = true; if (it.images.length <= 1) toast('У этого объявления одно фото'); hapticNote('success'); }
   } catch (e) { fail(e); }
   st.ploading = false; rerenderGallery(k);
 }
@@ -755,7 +755,6 @@ function itemHTML(k) {
     <div class="row" style="margin-top:16px;gap:8px">
       <button class="btn lime press" style="flex:1;min-width:0;height:54px;font-size:15px" data-act="open" data-key="${esc(k)}">Открыть на Goofish ↗</button>
       <button class="glass press sq" data-act="phrases" data-key="${esc(k)}" aria-label="Фразы продавцу на китайском" aria-expanded="${st.phrases}">${svg(ICON.chat)}</button>
-      <button class="glass press sq" data-act="hide" data-key="${esc(k)}" aria-label="Скрыть из ленты" title="Скрыть">${svg(ICON.eyeoff)}</button>
     </div>
     <div id="phrasesBox">${st.phrases ? phrasesHTML() : ''}</div>`;
 }
