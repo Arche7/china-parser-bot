@@ -582,8 +582,137 @@ async def index(request: web.Request) -> web.Response:
     return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+# ----------------------------------------------------------------------
+# 🤖 ИИ-помощник по переписке с продавцом (ELITE) — та же логика, что в боте
+# (ai.assistant + лимит «assistant»), но история хранится в базе, по разговорам:
+# отдельно про каждую вещь ("goofish:123") и общий ("general").
+# ----------------------------------------------------------------------
+
+ASSISTANT_MAX_PHOTOS = 6
+ASSISTANT_MAX_PHOTO_BYTES = 8 * 1024 * 1024
+_INTENT_LABELS = {"alt": "Другой вариант ответа", "bargain": "Помоги поторговаться",
+                  "photos": "Какие фото попросить?", "verdict": "Итог по риску"}
+
+
+def _thread(source: str | None, item_id: str | None) -> str:
+    if source and item_id:
+        if not re.fullmatch(r"[a-z0-9_]{1,20}", source) or not re.fullmatch(r"[0-9A-Za-z_-]{1,40}", item_id):
+            raise ApiError(400, "bad_item")
+        return f"{source}:{item_id}"
+    return "general"
+
+
+async def _assistant_access(request: web.Request):
+    db, uid = request.app[DB], request["uid"]
+    plan = await user_plan(db, uid)
+    return plan, bool(plan.assistant and (request["access"] or request["admin"]))
+
+
+async def api_assistant_get(request: web.Request) -> web.Response:
+    """История разговора и сколько сообщений осталось."""
+    from handlers.assistant import listing_context
+    db, uid = request.app[DB], request["uid"]
+    q = request.query
+    thread = _thread(q.get("source") or None, q.get("item_id") or None)
+    plan, allowed = await _assistant_access(request)
+    about = None
+    if thread != "general":
+        source, item_id = thread.split(":", 1)
+        found = await listing_context(db, source, item_id)
+        about = found[0] if found else None
+    return web.json_response({
+        "enabled": allowed, "ai": ai.enabled(), "about": about,
+        "left": await services.quota_left(db, uid, "assistant") if allowed else 0, "total": plan.assistant,
+        "messages": await db.list_assistant_msgs(uid, thread) if allowed else [],
+    })
+
+
+async def _empty_parts():
+    return
+    yield
+
+
+async def api_assistant_post(request: web.Request) -> web.Response:
+    """
+    Новое сообщение помощнику. multipart/form-data: text, intent, source, item_id и до 6 файлов photo.
+    Каждый ответ ИИ — минус одно сообщение из лимита (несколько фото за раз — тоже одно).
+    """
+    from handlers.assistant import history_entry, listing_context
+    db, uid = request.app[DB], request["uid"]
+    plan, allowed = await _assistant_access(request)
+    if not allowed:
+        raise ApiError(403, "plan_assistant")
+    if not ai.enabled():
+        raise ApiError(503, "ai_off")
+    fields: dict[str, str] = {}
+    images: list[bytes] = []
+    try:
+        if request.content_type == "application/x-www-form-urlencoded":
+            # форма без фото (так её шлют некоторые клиенты)
+            post = await request.post()
+            fields = {k: str(post.get(k) or "")[:2000] for k in ("text", "intent", "source", "item_id")}
+        elif not request.content_type.startswith("multipart/"):
+            raise ApiError(400, "bad_form")
+        reader = await request.multipart() if request.content_type.startswith("multipart/") else None
+        async for part in (reader or _empty_parts()):
+            if part.name == "photo":
+                if len(images) >= ASSISTANT_MAX_PHOTOS:
+                    await part.release()
+                    continue
+                body = await part.read(decode=False)
+                if len(body) > ASSISTANT_MAX_PHOTO_BYTES:
+                    raise ApiError(413, "photo_too_big")
+                if body:
+                    images.append(bytes(body))
+            elif part.name in ("text", "intent", "source", "item_id"):
+                fields[part.name] = (await part.text())[:2000]
+            else:
+                await part.release()
+    except ApiError:
+        raise
+    except Exception:
+        raise ApiError(400, "bad_form")
+    text = (fields.get("text") or "").strip() or None
+    intent = fields.get("intent") if fields.get("intent") in _INTENT_LABELS else None
+    if not text and not images and not intent:
+        raise ApiError(400, "empty")
+    thread = _thread(fields.get("source") or None, fields.get("item_id") or None)
+    if await services.quota_left(db, uid, "assistant") <= 0:
+        raise ApiError(429, "limit")
+
+    context = ""
+    if thread != "general":
+        found = await listing_context(db, *thread.split(":", 1))
+        context = found[1] if found else ""
+    history = []
+    for m in (await db.list_assistant_msgs(uid, thread, limit=10)):
+        if m["role"] == "user":
+            bits = [_INTENT_LABELS.get(m.get("intent") or "", ""), m.get("text") or "",
+                    f"[прислал фото: {m['photos']}]" if m.get("photos") else ""]
+            history.append({"role": "user", "content": " ".join(b for b in bits if b) or "(сообщение)"})
+        elif isinstance(m.get("reply"), dict):
+            history.append({"role": "assistant", "content": history_entry(m["reply"])})
+
+    reply = await ai.assistant(context, history, text=text, images=images or None, intent=intent)
+    if not reply:
+        raise ApiError(502, "ai_failed")   # лимит не тратим
+    await db.add_usage(uid, "assistant")
+    user_msg = {"text": text, "photos": len(images), "intent": intent}
+    await db.add_assistant_msg(uid, thread, "user", user_msg)
+    await db.add_assistant_msg(uid, thread, "assistant", {"reply": reply})
+    return web.json_response({"reply": reply, "left": await services.quota_left(db, uid, "assistant")})
+
+
+async def api_assistant_clear(request: web.Request) -> web.Response:
+    body = await _body(request)
+    thread = _thread(str(body.get("source") or "") or None, str(body.get("item_id") or "") or None)
+    await request.app[DB].clear_assistant(request["uid"], thread)
+    return web.json_response({"ok": True})
+
+
 def create_app(db, bot, monitor, avito, sources: dict) -> web.Application:
-    app = web.Application(middlewares=[api_middleware])
+    # client_max_size — чтобы влезли фото для ИИ-помощника (до 6 штук)
+    app = web.Application(middlewares=[api_middleware], client_max_size=40 * 1024 * 1024)
     app[DB], app[BOT], app[MONITOR], app[AVITO], app[SOURCES] = db, bot, monitor, avito, sources
     r = app.router
     r.add_get("/", index)
@@ -606,5 +735,8 @@ def create_app(db, bot, monitor, avito, sources: dict) -> web.Application:
     r.add_post("/api/own_invoice", api_own_invoice)
     r.add_post("/api/trial", api_trial)
     r.add_post("/api/settings", api_settings)
+    r.add_get("/api/assistant", api_assistant_get)
+    r.add_post("/api/assistant", api_assistant_post)
+    r.add_post("/api/assistant/clear", api_assistant_clear)
     r.add_static("/static", STATIC)
     return app

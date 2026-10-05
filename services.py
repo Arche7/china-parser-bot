@@ -12,6 +12,7 @@
      лимит тарифа не тратится.
 """
 
+import asyncio
 import logging
 import time
 
@@ -188,8 +189,25 @@ def seller_lines(detail: dict | None) -> list[str]:
 DETAIL_RETRY_SEC = 6 * 3600   # после неудачной загрузки карточки пробуем снова через 6 часов
 
 
+_enrich_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
 async def enrich(db: Database, sources: dict, keyword: str, source: str, item_id: str, data: dict) -> dict | None:
-    """Полная карточка объявления (с кэшем в базе)."""
+    """
+    Полная карточка объявления (с кэшем в базе).
+    Один запрос на объявление за раз: раньше «Все фото» и легит-чек, нажатые почти
+    одновременно, грузили карточку дважды, и второй (пустой) ответ Goofish затирал первый.
+    """
+    lock = _enrich_locks.setdefault((source, item_id), asyncio.Lock())
+    async with lock:
+        fresh = await db.get_listing(source, item_id)
+        if fresh:
+            data.clear()
+            data.update(fresh[1])   # вдруг карточку уже загрузил соседний запрос
+        return await _enrich(db, sources, keyword, source, item_id, data)
+
+
+async def _enrich(db: Database, sources: dict, keyword: str, source: str, item_id: str, data: dict) -> dict | None:
     cached = data.get("detail")
     if isinstance(cached, dict) and cached and (cached.get("v", 0) >= DETAIL_VERSION or cached.get("status")):
         return cached
@@ -204,6 +222,10 @@ async def enrich(db: Database, sources: dict, keyword: str, source: str, item_id
             data["detail_failed"] = int(time.time())
             await db.save_listing(source, item_id, keyword, data)
         return cached or None
+    if isinstance(cached, dict) and cached.get("images") and not detail.get("images"):
+        # Goofish иногда отдаёт «урезанную» карточку без фото (restrictionReason) —
+        # не теряем уже загруженную галерею
+        detail = {**detail, "images": cached["images"]}
     data["detail"] = detail
     data.pop("detail_failed", None)
     if detail.get("status"):

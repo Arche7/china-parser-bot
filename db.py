@@ -136,6 +136,18 @@ CREATE INDEX IF NOT EXISTS idx_watches_keyword ON watches (keyword);
 CREATE INDEX IF NOT EXISTS idx_sent_time ON sent (sent_at);
 CREATE INDEX IF NOT EXISTS idx_seen_time ON seen (first_seen);
 CREATE INDEX IF NOT EXISTS idx_listings_time ON listings (created_at);
+
+-- ИИ-помощник по переписке в приложении (ELITE): история разговоров.
+-- thread — "goofish:123" (разговор про конкретную вещь) или "general".
+CREATE TABLE IF NOT EXISTS assistant_msgs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    thread      TEXT NOT NULL,
+    role        TEXT NOT NULL,                -- user / assistant
+    data        TEXT NOT NULL,                -- JSON: текст, число фото или ответ ИИ
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_thread ON assistant_msgs (user_id, thread, id);
 """
 
 # Новые столбцы в старых таблицах: (таблица, столбец, описание)
@@ -615,6 +627,31 @@ class Database:
 
     # ---------------- Лимиты тарифа ----------------
 
+    # ---------------- ИИ-помощник (история в приложении) ----------------
+
+    async def add_assistant_msg(self, user_id: int, thread: str, role: str, data: dict) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO assistant_msgs (user_id, thread, role, data, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, thread, role, json.dumps(data, ensure_ascii=False), _now()),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def list_assistant_msgs(self, user_id: int, thread: str, limit: int = 60) -> list[dict]:
+        """Последние сообщения разговора, от старых к новым."""
+        cur = await self.conn.execute(
+            "SELECT id, role, data, created_at FROM assistant_msgs WHERE user_id = ? AND thread = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (user_id, thread, limit),
+        )
+        rows = list(await cur.fetchall())
+        return [{"id": r["id"], "role": r["role"], "at": r["created_at"], **json.loads(r["data"])}
+                for r in reversed(rows)]
+
+    async def clear_assistant(self, user_id: int, thread: str) -> None:
+        await self.conn.execute("DELETE FROM assistant_msgs WHERE user_id = ? AND thread = ?", (user_id, thread))
+        await self.conn.commit()
+
     async def get_usage(self, user_id: int, kind: str) -> int:
         cur = await self.conn.execute(
             "SELECT count FROM usage WHERE user_id = ? AND kind = ? AND period = ?",
@@ -925,6 +962,7 @@ class Database:
         await self.conn.execute("DELETE FROM seen WHERE first_seen < ?", (border,))
         await self.conn.execute("DELETE FROM sent WHERE sent_at < ?", (border,))
         await self.conn.execute("DELETE FROM feed WHERE created_at < ?", (_now() - 14 * 86400,))
+        await self.conn.execute("DELETE FROM assistant_msgs WHERE created_at < ?", (_now() - 30 * 86400,))
         # Объявления из избранного не удаляем
         await self.conn.execute(
             """

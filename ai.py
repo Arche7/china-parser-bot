@@ -49,7 +49,13 @@ async def _chat(model: str, messages: list[dict], max_tokens: int = 700, json_mo
                 if resp.status >= 400:
                     log.warning("ИИ ответил ошибкой %s: %s", resp.status, str(data)[:300])
                     return None
-        return data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        if message.get("refusal"):
+            log.warning("ИИ отказался отвечать (%s): %s", model, str(message["refusal"])[:300])
+            return None
+        if not message.get("content"):
+            log.warning("ИИ вернул пустой ответ (%s), finish_reason=%s", model, data["choices"][0].get("finish_reason"))
+        return message.get("content")
     except Exception as e:
         log.warning("Ошибка запроса к ИИ: %s", e)
         return None
@@ -68,6 +74,26 @@ def _parse_json(text: str | None) -> dict | None:
             except ValueError:
                 return None
     return None
+
+
+async def _download_images(urls: list[str]) -> list[bytes]:
+    """Скачивает фото по ссылкам (до 8 МБ каждое). Пропускает те, что не скачались."""
+    out: list[bytes] = []
+    timeout = aiohttp.ClientTimeout(total=25)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for url in urls:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            body = await resp.read()
+                            if 0 < len(body) <= 8 * 1024 * 1024:
+                                out.append(body)
+                except Exception as e:
+                    log.debug("Не скачал фото %s: %s", url, e)
+    except Exception as e:
+        log.warning("Не скачал фото для ИИ: %s", e)
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -168,7 +194,17 @@ async def legit_check(
         max_tokens=900,
     )
     data = _parse_json(text)
+    if (not isinstance(data, dict) or "verdict" not in data) and image_urls and not images:
+        # ИИ не смог скачать фото по ссылкам alicdn или ответил не по формату —
+        # скачиваем фото сами и пробуем ещё раз, уже присылая картинки целиком
+        log.warning("Легит-чек: ответ ИИ без вердикта (%s) — пробую ещё раз со скачанными фото",
+                    (text or "пусто")[:200].replace("\n", " "))
+        raw = await _download_images(image_urls[:6])
+        if raw:
+            return await legit_check(brand, images=raw, title=title, price_text=price_text, notes=notes)
+        return None
     if not isinstance(data, dict) or "verdict" not in data:
+        log.warning("Легит-чек: ответ ИИ без вердикта: %s", (text or "пусто")[:200].replace("\n", " "))
         return None
     try:
         data["score"] = max(0, min(100, int(data.get("score", 50))))

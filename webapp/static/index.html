@@ -260,6 +260,35 @@ input{font-family:inherit}
 .cmp td.n{color:#5d625b}
 .lock{display:inline-flex;vertical-align:-2px;margin-right:3px;opacity:.8}
 .aibtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border-radius:20px;padding:14px 16px;margin-top:12px}
+.ai-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ai-head h2{margin:0;font-size:20px}
+.ai-list{display:flex;flex-direction:column;gap:10px;margin-top:14px;min-height:120px}
+.ai-empty{font-size:13px;line-height:1.5;color:var(--muted2);padding:14px;border-radius:18px;border:1px dashed rgba(255,255,255,.14)}
+.ai-empty b{color:var(--soft)}
+.bub{max-width:88%;border-radius:18px;padding:10px 13px;font-size:14px;line-height:1.45;word-wrap:break-word}
+.bub.me{align-self:flex-end;background:rgba(212,255,58,.14);border:1px solid rgba(212,255,58,.3);color:var(--text);border-bottom-right-radius:6px}
+.bub.me small{display:block;color:var(--lime);font-weight:700;font-size:12px;margin-bottom:2px}
+.bub.ai{align-self:flex-start;background:rgba(255,255,255,.06);border:1px solid var(--line);border-bottom-left-radius:6px;max-width:94%}
+.bub.ai .lh{margin-top:8px}
+.bub.ai p{margin:4px 0 0;color:var(--soft)}
+.cn{margin-top:6px;padding:10px 12px;border-radius:14px;background:rgba(0,0,0,.35);border:1px solid rgba(212,255,58,.35);display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left}
+.cn span{flex:1;min-width:0;font-size:16px;line-height:1.4;color:var(--text)}
+.cn i{font-style:normal;font-size:11px;font-weight:800;color:var(--lime);white-space:nowrap;margin-top:3px}
+.risk{display:inline-block;margin-top:8px;padding:5px 9px;border-radius:9px;font-size:12px;font-weight:800}
+.risk.likely_real{background:rgba(120,220,120,.14);color:#9BE29B}.risk.unclear{background:rgba(255,200,80,.14);color:#FFD27A}.risk.likely_fake{background:rgba(255,100,100,.14);color:#FF9A9A}
+.ai-chips{display:flex;gap:6px;overflow-x:auto;margin:12px -18px 0;padding:0 18px}
+.ai-chips .chip{height:34px;font-size:12px}
+.composer{position:sticky;bottom:calc(-1 * (var(--bottom) + 28px));margin:10px -18px 0;padding:10px 18px calc(var(--bottom) + 16px);background:var(--sheet);border-top:1px solid var(--line)}
+.composer .row2{display:flex;gap:8px;align-items:flex-end}
+.composer textarea{flex:1;min-width:0;min-height:44px;max-height:120px;resize:none;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);padding:11px 13px;font:inherit;font-size:16px;outline:none}
+.composer textarea:focus{border-color:rgba(212,255,58,.55)}
+.composer .ib{width:44px;height:44px;flex:none;border-radius:14px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.composer .ib.send{background:var(--lime);color:var(--ink)}
+.composer .ib[disabled]{opacity:.4}
+.thumbs{display:flex;gap:6px;margin-bottom:8px;overflow-x:auto}
+.thumbs div{position:relative;flex:none}
+.thumbs img{width:52px;height:52px;object-fit:cover;border-radius:10px;display:block}
+.thumbs button{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:#000;color:#fff;font-size:12px;line-height:20px}
 .aibtn > svg{flex:none;width:42px;height:42px;padding:10px;border-radius:14px;background:rgba(212,255,58,.12);color:var(--lime)}
 .aibtn b{display:block;font-size:15px}
 .aibtn small{display:block;font-size:12px;color:var(--muted);margin-top:2px;line-height:1.35}
@@ -1058,15 +1087,137 @@ function upsell(f) {
   openSheet(`<h2 class="h1" style="font-size:22px">${esc(u[0])}</h2><div class="txt" style="margin-top:10px">${esc(u[1])}</div>
     <button class="btn lime press" style="margin-top:18px;width:100%;height:52px" data-act="toPlans">Сравнить тарифы</button>`, 'upsell');
 }
+/* ---------- 🤖 ИИ-помощник по переписке (ELITE) ---------- */
+const AI_INTENTS = [['bargain', '💰 Поторговаться'], ['photos', '📸 Какие фото попросить'], ['verdict', '🛡 Итог по риску'], ['alt', '🔁 Другой вариант']];
+const AI_VERDICT = { likely_real: 'похоже на оригинал', unclear: 'пока непонятно', likely_fake: 'похоже на подделку' };
+const AI_CHANGE = { better: ' · ↗ стало лучше', worse: ' · ↘ стало хуже', same: ' · → без изменений', first: '' };
+const AI_INTENT_TEXT = { alt: 'Другой вариант ответа', bargain: 'Помоги поторговаться', photos: 'Какие фото попросить?', verdict: 'Итог по риску' };
 function openAssistant(k) {
   const me = S.me;
   if (!me.plan.assistant) { upsell('assistant'); return; }
-  if (!me.bot) { toast('Открой бота и нажми «🤖 ИИ-помощник» на главной'); return; }
   const it = k ? S.items[k] : null;
-  const payload = it ? `ai_${it.source}_${it.item_id}` : 'ai';
-  const link = `https://t.me/${me.bot}?start=${encodeURIComponent(payload)}`;
-  if (tg && tg.openTelegramLink) { tg.openTelegramLink(link); if (tg.close) setTimeout(() => tg.close(), 300); }
-  else openLink(link);
+  S.ai = { key: k || null, source: it ? it.source : null, item_id: it ? it.item_id : null, msgs: null, left: null, total: me.plan.assistant, about: null, files: [], busy: false };
+  openSheet(aiHTML(), 'assistant');
+  loadAssistant();
+}
+function aiQuery() { const a = S.ai; return a.source ? `?source=${encodeURIComponent(a.source)}&item_id=${encodeURIComponent(a.item_id)}` : ''; }
+async function loadAssistant() {
+  try {
+    const r = await api('/api/assistant' + aiQuery());
+    if (!S.ai) return;
+    Object.assign(S.ai, { msgs: r.messages || [], left: r.left, total: r.total, about: r.about, ai: r.ai });
+    if (!r.enabled) { closeSheet(); upsell('assistant'); return; }
+  } catch (e) { fail(e); if (S.ai) S.ai.msgs = []; }
+  renderAI(true);
+}
+function aiReplyHTML(r) {
+  let h = '';
+  if (r.seller_said) h += `<div class="lh">Продавец пишет</div><p>«${esc(r.seller_said)}»</p>`;
+  if (r.meaning) h += `<p>${esc(r.meaning)}</p>`;
+  if (r.reply_cn) h += `<div class="lh">Ответ продавцу</div><button class="cn press" data-act="aiCopy" data-t="${esc(r.reply_cn)}"><span lang="zh">${esc(r.reply_cn)}</span><i>КОПИРОВАТЬ</i></button>${r.reply_ru ? `<p style="color:var(--muted2);font-size:13px">${esc(r.reply_ru)}</p>` : ''}`;
+  if (r.legit) h += `<div class="risk ${esc(r.legit.verdict)}">Риск подделки: ${esc(AI_VERDICT[r.legit.verdict] || '')} · ${r.legit.score}/100${AI_CHANGE[r.legit.change] || ''}</div>${r.legit.why ? `<p>${esc(r.legit.why)}</p>` : ''}`;
+  const list = (title, arr) => arr && arr.length ? `<div class="lh">${title}</div>${arr.map(x => `<p>• ${esc(x)}</p>`).join('')}` : '';
+  h += list('⚠️ Красные флаги', r.red_flags) + list('Попроси фото', r.ask_photos) + list('Советы', r.tips);
+  return h || '<p>Готово.</p>';
+}
+function aiMsgHTML(m) {
+  if (m.role === 'user') {
+    const label = m.intent ? `<small>${esc(AI_INTENT_TEXT[m.intent] || '')}</small>` : '';
+    const ph = m.photos ? `<div style="color:var(--muted2);font-size:12px;margin-top:${m.text ? 4 : 0}px">📷 ${m.photos} фото</div>` : '';
+    return `<div class="bub me">${label}${m.text ? esc(m.text) : ''}${ph}</div>`;
+  }
+  if (m.pending) return `<div class="bub ai"><div class="sub">Читаю и думаю… обычно 10–30 секунд</div><div class="shimmer" style="height:10px;border-radius:5px;margin-top:8px;width:180px"></div></div>`;
+  return `<div class="bub ai">${aiReplyHTML(m.reply || {})}</div>`;
+}
+function aiListHTML() {
+  const a = S.ai;
+  if (!a.msgs) return '<div class="glass skel" style="height:120px;border-radius:18px"></div>';
+  if (!a.msgs.length) return `<div class="ai-empty">Пришли сюда:<br><b>📱 скрин переписки</b> с продавцом из Goofish или WeChat — переведу, объясню, что он имел в виду, и напишу ответ на китайском;<br><b>📸 фото вещи</b> — скажу, стал ли риск подделки меньше или больше и каких фото не хватает;<br><b>💬 вопрос</b> по-русски — «предложи 1500», «как спросить про чек?».<br><br><span style="color:var(--muted)">Помощник не пишет продавцу сам. Это оценка риска, а не гарантия подлинности.</span></div>`;
+  return a.msgs.map(aiMsgHTML).join('');
+}
+function aiThumbsHTML() {
+  const f = S.ai.files;
+  return f.length ? `<div class="thumbs">${f.map((x, i) => `<div><img src="${x.url}" alt="Фото ${i + 1}"><button data-act="aiRmPhoto" data-i="${i}" aria-label="Убрать фото">×</button></div>`).join('')}</div>` : '';
+}
+function aiHTML() {
+  const a = S.ai;
+  const left = a.left != null ? `Осталось сообщений: ${num(a.left)} из ${num(a.total)}` : '';
+  return `<div class="ai-head"><div style="min-width:0"><h2 class="h1">ИИ-помощник</h2><div class="sub" style="margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.about || 'Переписка с продавцом')}</div></div>
+      ${a.msgs && a.msgs.length ? `<button class="lbtn press" data-act="aiClear">Очистить</button>` : ''}</div>
+    <div class="ai-list" id="aiList" aria-live="polite">${aiListHTML()}</div>
+    <div class="ai-chips">${AI_INTENTS.map(([v, l]) => `<button class="chip press" data-act="aiIntent" data-v="${v}"${a.busy ? ' disabled' : ''}>${l}</button>`).join('')}</div>
+    <div class="composer"><div id="aiThumbs">${aiThumbsHTML()}</div>
+      <div class="row2">
+        <label class="ib press" aria-label="Прикрепить скрин или фото">${svg('M4 7h3l2-2h6l2 2h3v12H4z M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8', 20, 1.8)}<input type="file" id="aiFile" accept="image/*" multiple hidden></label>
+        <textarea id="aiText" rows="1" placeholder="Вопрос или текст…" aria-label="Сообщение помощнику"></textarea>
+        <button class="ib send press" data-act="aiSend" aria-label="Отправить"${a.busy ? ' disabled' : ''}>${svg('M5 12h14 M13 6l6 6-6 6', 20, 2.2)}</button>
+      </div>
+      <div class="foot" style="margin-top:6px">${left}</div></div>`;
+}
+function renderAI(scroll) {
+  if (!S.ai || !S.sheet || S.sheet.name !== 'assistant') return;
+  const ta = $('aiText'), draft = ta ? ta.value : '';
+  setSheet(aiHTML());
+  const t2 = $('aiText'); if (t2) t2.value = draft;
+  if (scroll) { const sh = document.querySelector('.sheet-wrap .sheet'); if (sh) sh.scrollTop = sh.scrollHeight; }
+}
+function shrinkImage(file) {
+  // Уменьшаем фото до 1600 px по длинной стороне — грузится быстрее, ИИ всё видит
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => resolve({ blob: b || file, url }), 'image/jpeg', 0.85);
+    };
+    img.onerror = () => resolve({ blob: file, url });
+    img.src = url;
+  });
+}
+document.addEventListener('change', async e => {
+  if (!e.target || e.target.id !== 'aiFile' || !S.ai) return;
+  const files = [...e.target.files].slice(0, 6 - S.ai.files.length);
+  if (e.target.files.length > files.length) toast('За раз — до 6 фото');
+  for (const f of files) S.ai.files.push(await shrinkImage(f));
+  const t = $('aiThumbs'); if (t) t.innerHTML = aiThumbsHTML();
+});
+async function aiSend(intent) {
+  const a = S.ai; if (!a || a.busy) return;
+  const ta = $('aiText'), text = ta ? ta.value.trim() : '';
+  if (!text && !a.files.length && !intent) { toast('Напиши вопрос или прикрепи скрин'); return; }
+  const fd = new FormData();
+  if (text) fd.append('text', text);
+  if (intent) fd.append('intent', intent);
+  if (a.source) { fd.append('source', a.source); fd.append('item_id', a.item_id); }
+  a.files.forEach((f, i) => fd.append('photo', f.blob, `photo${i + 1}.jpg`));
+  const userMsg = { role: 'user', text: text || null, photos: a.files.length, intent: intent || null };
+  a.msgs = (a.msgs || []).concat([userMsg, { role: 'assistant', pending: true }]);
+  a.busy = true; const sent = a.files; a.files = []; if (ta) ta.value = '';
+  renderAI(true); haptic();
+  let r = null, err = null;
+  try {
+    const resp = await fetch('/api/assistant', { method: 'POST', headers: { 'X-Init-Data': INIT }, body: fd });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) err = new ApiErr(resp.status, (data && data.error) || 'error'); else r = data;
+  } catch (e) { err = new ApiErr(0, 'network'); }
+  if (!S.ai) return;
+  a.busy = false;
+  a.msgs = a.msgs.filter(m => !m.pending);
+  if (r) { a.msgs.push({ role: 'assistant', reply: r.reply }); a.left = r.left; S.me.plan.assistant_left = r.left; hapticNote('success'); sent.forEach(f => URL.revokeObjectURL(f.url)); }
+  else {
+    a.msgs.pop(); a.files = sent; if ($('aiText') === null) { }
+    hapticNote('error');
+    toast(err.status === 429 ? 'Сообщения помощнику в этом месяце закончились' : err.status === 502 ? 'ИИ не ответил — попробуй ещё раз, лимит не потрачен'
+      : err.status === 413 ? 'Фото слишком большое' : err.status === 403 ? 'ИИ-помощник есть в ELITE' : errText(err));
+  }
+  renderAI(true);
+  if (!r && text) { const t = $('aiText'); if (t) t.value = text; }
+}
+async function aiClear() {
+  const a = S.ai; if (!a) return;
+  try { await api('/api/assistant/clear', { method: 'POST', body: a.source ? { source: a.source, item_id: a.item_id } : {} }); a.msgs = []; renderAI(); toast('Разговор очищен'); }
+  catch (e) { fail(e); }
 }
 function profileScreen() {
   const me = S.me, p = me.plan, s = me.settings;
@@ -1217,6 +1368,11 @@ const ACT = {
   photos: el => loadPhotos(el.dataset.key),
   upsell: el => upsell(el.dataset.f),
   assistant: el => openAssistant(el.dataset.key),
+  aiSend: () => aiSend(null),
+  aiIntent: el => aiSend(el.dataset.v),
+  aiClear: () => aiClear(),
+  aiRmPhoto: el => { const f = S.ai.files.splice(+el.dataset.i, 1)[0]; if (f) URL.revokeObjectURL(f.url); $('aiThumbs').innerHTML = aiThumbsHTML(); },
+  aiCopy: async el => { await copyText(el.dataset.t); hapticNote('success'); toast('Скопировано — вставь в чат с продавцом'); },
   phrases: el => { const st = ist(el.dataset.key); st.phrases = !st.phrases; el.setAttribute('aria-expanded', st.phrases); $('phrasesBox').innerHTML = st.phrases ? phrasesHTML() : ''; if (st.phrases) $('phrasesBox').scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'nearest' }); },
   copy: async el => { const p = PHRASES[+el.dataset.i]; await copyText(p[0]); hapticNote('success'); toast(p[0] + ' — скопировано'); },
   toPlans: () => { closeSheet(); goTab('profile'); setTimeout(() => { const h = [...document.querySelectorAll('#view h2')].pop(); if (h) h.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' }); }, 450); },
