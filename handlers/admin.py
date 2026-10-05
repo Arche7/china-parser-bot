@@ -8,7 +8,8 @@
   /users                     — пользователи
   /stats                     — статистика и прогноз расходов
   /payments                  — последние оплаты звёздами (handlers/payments.py)
-  /export                    — все оплаты файлом для таблицы «HUNTR-финансы»
+  /export                    — все оплаты файлом (только владелец, OWNER_ID)
+  /phototest <id или ссылка> — сколько фото отдаёт Goofish по объявлению
   /refund <id> <charge_id>   — вернуть звёзды (handlers/payments.py)
   /broadcast                 — ответь этой командой на сообщение, чтобы разослать
                                 его всем пользователям (спросит подтверждение)
@@ -135,7 +136,11 @@ async def cmd_stats(message: Message, db: Database, monitor: Monitor, avito: Avi
     await message.answer(
         "📊 <b>Статистика</b>\n\n"
         f"Брендов на радаре (уникальных): {f['jobs']} · подписок на бренды: {f['watches']}\n"
-        f"Мин. интервал: {config.CHECK_INTERVAL_MIN} мин · объявлений за запрос: {config.MAX_ITEMS}\n\n"
+        f"Мин. интервал: {config.CHECK_INTERVAL_MIN} мин · объявлений за запрос: {config.MAX_ITEMS}\n"
+        + (f"⚠️ <b>CHECK_INTERVAL_MIN={config.CHECK_INTERVAL_MIN}</b> — PRO и ELITE сейчас тоже проверяются "
+           f"раз в {config.CHECK_INTERVAL_MIN} мин, хотя в тарифах обещано 15 и 10. Перед продажей поставь "
+           f"CHECK_INTERVAL_MIN=10 в Variables на Railway.\n" if config.CHECK_INTERVAL_MIN > plans.ELITE.interval_min else "")
+        + "\n"
         f"💸 Apify Goofish, максимум: ~${f['usd_day']:.2f}/день ≈ {plans.rub(f['rub_month'])}/мес\n"
         "<i>Реально меньше: «умная экономия» реже проверяет бренды без новинок. "
         "Точные цифры — Apify → Billing.</i>\n"
@@ -164,16 +169,56 @@ async def cmd_avitotest(message: Message, command: CommandObject, avito: AvitoPr
     if not avito.enabled:
         await message.answer("Авито выключено (AVITO_ENABLED=0).")
     elif market and market.get("median"):
+        via = f"\nАктор: <code>{html.escape(avito.last_actor)}</code>" if avito.last_actor else "\n(из кэша за сутки)"
         await message.answer(f"✅ Работает: {market['count']} цен, медиана {market['median']:.0f} ₽ "
-                             f"({market['p25']:.0f}–{market['p75']:.0f} ₽)\n{market['url']}")
+                             f"({market['p25']:.0f}–{market['p75']:.0f} ₽){via}\n{market['url']}")
     else:
         if avito.last_log == "APIFY_LIMIT" or apify_guard.blocked():
             await message.answer(apify_guard.alert_text())
             return
-        tail = html.escape(" \n".join((avito.last_log or "").strip().splitlines()[-12:]))[-3000:]
-        await message.answer(f"⚠️ Цен не получил (нашлось: {(market or {}).get('count', 0)}).\n\n"
-                             + (f"<b>Конец лога актора:</b>\n<pre>{tail}</pre>" if tail else
-                                "Актор ничего не написал в лог — загляни в логи Railway."))
+        tail = html.escape("\n".join((avito.last_log or "").strip().splitlines()[-16:]))[-3200:]
+        await message.answer(f"⚠️ Цен не получил (подходящих: {(market or {}).get('count', 0)}).\n\n"
+                             + (f"<b>Что ответили акторы:</b>\n<pre>{tail}</pre>" if tail else
+                                "Акторы ничего не написали в лог — загляни в логи Railway."))
+
+
+@router.message(Command("phototest"))
+async def cmd_phototest(message: Message, command: CommandObject, sources: dict) -> None:
+    """
+    Проверка фото: /phototest 1090297096758 (или ссылка на объявление Goofish).
+    Делает настоящий запрос полной карточки и говорит, сколько фото вернул актор.
+    Стоит как одна полная карточка на Apify.
+    """
+    import re
+    arg = (command.args or "").strip()
+    match = re.search(r"(\d{9,})", arg)
+    if not match:
+        await message.answer("Формат: <code>/phototest 1090297096758</code> или ссылка на объявление Goofish")
+        return
+    item_id = match.group(1)
+    src = sources.get("goofish")
+    if not src:
+        await message.answer("Goofish не подключён.")
+        return
+    await message.answer(f"Загружаю карточку {item_id}… (до 2 минут)")
+    apify_guard.clear()
+    detail = await src.details(item_id)
+    if not detail:
+        await message.answer(apify_guard.alert_text() if apify_guard.blocked()
+                             else "⚠️ Карточку не получил — подробности в логах Railway (строки «Goofish: карточка»).")
+        return
+    if detail.get("status") and not detail.get("images"):
+        await message.answer(f"Объявление {item_id}: статус «{detail['status']}» — похоже, продано или удалено.")
+        return
+    images = detail.get("images") or []
+    lines = [f"📸 Объявление <code>{item_id}</code>: фото <b>{len(images)}</b>"
+             + (" (показываем до 9)" if len(images) >= 9 else "")]
+    for i, url in enumerate(images[:9], 1):
+        lines.append(f"{i}. <a href=\"{html.escape(url)}\">фото {i}</a>")
+    seller = detail.get("seller") or {}
+    if any(seller.values()):
+        lines.append("\nПродавец: " + ", ".join(f"{k}={v}" for k, v in seller.items() if v not in (None, "")))
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("broadcast"))

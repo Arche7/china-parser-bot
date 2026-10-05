@@ -41,7 +41,7 @@ async def _plan(db: Database, user_id: int) -> plans.Plan:
 
 async def quota_left(db: Database, user_id: int, kind: str) -> int:
     plan = await _plan(db, user_id)
-    limit = plan.legit_checks if kind == "legit" else plan.price_checks
+    limit = {"legit": plan.legit_checks, "price": plan.price_checks, "assistant": plan.assistant}.get(kind, 0)
     return max(0, limit - await db.get_usage(user_id, kind))
 
 

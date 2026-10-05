@@ -35,6 +35,13 @@ class Plan:
     seats: int = 0            # 0 = без ограничения мест
     own_interval_min: int = 30  # как часто проверять «свои» бренды (их никто не делит — каждый запрос платный)
     extra_own: int = 0          # сколько слотов «+1 свой бренд» докуплено (заполняется для конкретного человека)
+    # --- Чем ещё тарифы отличаются (кроме цифр выше) ---
+    instant: bool = True        # можно ли режим уведомлений «Сразу» (иначе — только сводка)
+    digest_min: int = 15        # самая частая сводка, минут
+    all_photos: bool = True     # кнопка «Все фото» (полная галерея объявления)
+    feed_days: int = 3          # сколько дней лента хранит находки
+    assistant: int = 0          # сообщений ИИ-помощнику по переписке в месяц (0 — нет помощника)
+    priority: int = 1           # кому из подписчиков бренда находка уходит раньше (больше — раньше)
 
 
 # «Свои» бренды (которых нет в каталоге) проверяются раз в 30 минут на любом
@@ -60,7 +67,11 @@ TRIAL = Plan(
     legit_checks=1,
     price_checks=2,
     tagline="2 дня, чтобы увидеть первые находки",
-    perks=["2 бренда из каталога", "проверка раз в час", "1 легит-чек", "2 сравнения с Авито"],
+    perks=["2 бренда из каталога", "проверка раз в час", "находки сразу или сводкой",
+           "1 легит-чек", "2 сравнения с Авито"],
+    instant=True,
+    all_photos=True,
+    feed_days=3,
 )
 
 START = Plan(
@@ -77,10 +88,16 @@ START = Plan(
     perks=[
         "5 брендов из каталога",
         "проверка каждые 30 мин",
-        "фильтр подделок и мусора",
-        "калькулятор себестоимости",
+        "находки сводкой — раз в 30 мин или реже",
+        "фильтр подделок и мусора, калькулятор себестоимости",
         "10 легит-чеков · 20 сравнений с Авито",
+        "лента за 3 дня",
     ],
+    instant=False,
+    digest_min=30,
+    all_photos=False,
+    feed_days=3,
+    priority=1,
 )
 
 PRO = Plan(
@@ -97,10 +114,15 @@ PRO = Plan(
     perks=[
         "15 брендов, из них 2 — любые свои",
         "каталог — каждые 15 мин, вдвое быстрее START",
-        "свои бренды — каждые 30 мин",
+        "⚡ находка сразу, в ту же минуту — не ждёшь сводку",
+        "все фото вещи, а не только обложка",
         "40 легит-чеков · 60 сравнений с Авито",
-        "все фото вещи, лента и избранное в приложении",
+        "лента за 7 дней",
     ],
+    instant=True,
+    all_photos=True,
+    feed_days=7,
+    priority=2,
 )
 
 ELITE = Plan(
@@ -117,10 +139,17 @@ ELITE = Plan(
     perks=[
         "30 брендов, из них 3 — любые свои",
         "каталог — каждые 10 мин, свои — каждые 30 мин",
-        "150 легит-чеков · 300 сравнений с Авито",
-        "ранний доступ к новым площадкам (95分)",
-        "личная поддержка",
+        "🤖 ИИ-помощник по переписке с продавцом: перевод скринов, ответ на китайском, торг",
+        "📸 уточняющий легит-чек по твоим фото — после каждого фото вердикт точнее",
+        "⚡ находка сразу и первым — раньше подписчиков START и PRO",
+        "150 легит-чеков · 300 сравнений с Авито · лента за 14 дней",
+        "ранний доступ к новым площадкам (95分) и личная поддержка",
     ],
+    instant=True,
+    all_photos=True,
+    feed_days=14,
+    assistant=300,
+    priority=3,
 )
 
 # Админ — без ограничений (для тебя и тестов)
@@ -135,6 +164,9 @@ ADMIN = Plan(
     legit_checks=10_000,
     price_checks=10_000,
     tagline="Полный доступ",
+    feed_days=14,
+    assistant=10_000,
+    priority=9,
 )
 
 # Порядок важен: так тарифы показываются в боте
@@ -145,6 +177,41 @@ ALL_PLANS: dict[str, Plan] = {p.code: p for p in [TRIAL, START, PRO, ELITE, ADMI
 def can_buy_own(plan: Plan) -> bool:
     """Можно ли докупить «+1 свой бренд» к этому тарифу (только к платным)."""
     return plan.code in {p.code for p in PAID_PLANS} and plan.extra_own < OWN_ADDON_MAX
+
+
+def next_plan_with(feature: str) -> Plan | None:
+    """Самый дешёвый платный тариф, где есть эта возможность (для подсказок «доступно в PRO»)."""
+    for p in PAID_PLANS:
+        value = getattr(p, feature)
+        if value is True or (not isinstance(value, bool) and isinstance(value, int) and value > 0):
+            return p
+    return None
+
+
+def comparison_rows() -> list[dict]:
+    """
+    Таблица «что есть на каком тарифе» — одна для бота и приложения.
+    [{"label": "Брендов", "values": ["5", "15", "30"]}, ...] в порядке PAID_PLANS.
+    """
+    def yes(flag: bool) -> str:
+        return "✓" if flag else "—"
+
+    def every(p: Plan) -> str:
+        return f"{p.interval_min} мин"
+
+    return [
+        {"label": "Брендов (своих)", "values": [f"{p.brands}" + (f" ({p.own_brands})" if p.own_brands else "")
+                                                for p in PAID_PLANS]},
+        {"label": "Проверка каталога", "values": [every(p) for p in PAID_PLANS]},
+        {"label": "⚡ Находка сразу", "values": [yes(p.instant) for p in PAID_PLANS]},
+        {"label": "Первым среди всех", "values": [yes(p.priority >= 3) for p in PAID_PLANS]},
+        {"label": "Все фото вещи", "values": [yes(p.all_photos) for p in PAID_PLANS]},
+        {"label": "🤖 ИИ-помощник продавца", "values": [f"{p.assistant}/мес" if p.assistant else "—"
+                                                      for p in PAID_PLANS]},
+        {"label": "Легит-чеков", "values": [str(p.legit_checks) for p in PAID_PLANS]},
+        {"label": "Сравнений с Авито", "values": [str(p.price_checks) for p in PAID_PLANS]},
+        {"label": "Лента хранит", "values": [f"{p.feed_days} дн." for p in PAID_PLANS]},
+    ]
 
 
 def get_plan(code: str | None) -> Plan:

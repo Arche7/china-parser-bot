@@ -45,6 +45,9 @@ APIFY_TOKEN: str = os.getenv("APIFY_TOKEN", "").strip()
 # Telegram ID администраторов через запятую. У админов полный доступ
 # и команды /grant, /revoke, /users, /stats.
 ADMIN_IDS: list[int] = _int_list(os.getenv("ADMIN_IDS", ""))
+# Владелец бота — только ему доступна выгрузка денег (/export).
+# По умолчанию — первый ID из ADMIN_IDS. Можно задать отдельно переменной OWNER_ID.
+OWNER_ID: int | None = (_int_list(os.getenv("OWNER_ID", "")) or ADMIN_IDS or [None])[0]
 
 # --- Мониторинг ---
 # Интервал проверки теперь зависит от тарифа (plans.py: 30/15/10 мин).
@@ -121,6 +124,9 @@ AI_BASE_URL: str = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").strip()
 AI_MODEL: str = os.getenv("AI_MODEL", "gpt-4o-mini").strip()
 # Модель, которая «видит» фото — для легит-чека
 AI_VISION_MODEL: str = os.getenv("AI_VISION_MODEL", "gpt-4o").strip()
+# Модель ИИ-помощника по переписке с продавцом (ELITE): видит скрины и пишет по-китайски.
+# По умолчанию та же «зрячая» модель, что и для легит-чека.
+AI_ASSISTANT_MODEL: str = os.getenv("AI_ASSISTANT_MODEL", "").strip() or AI_VISION_MODEL
 
 # --- Сравнение цен с Авито ---
 # Официальный API Авито не умеет искать чужие объявления, поэтому
@@ -128,6 +134,10 @@ AI_VISION_MODEL: str = os.getenv("AI_VISION_MODEL", "gpt-4o").strip()
 AVITO_ENABLED: bool = os.getenv("AVITO_ENABLED", "1").strip() not in ("0", "false", "no", "")
 AVITO_ACTOR_ID: str = os.getenv("AVITO_ACTOR_ID", "ahaham_bytiz/avito-scraper").strip()
 AVITO_MAX_ITEMS: int = int(os.getenv("AVITO_MAX_ITEMS", "30"))
+# Сколько раз пробовать основной актор (каждый раз — новый IP), если Авито ответил 429
+AVITO_TRIES: int = int(os.getenv("AVITO_TRIES", "2"))
+# Запасной актор, если основной не справился. Пусто — без запасного.
+AVITO_FALLBACK_ACTOR_ID: str = os.getenv("AVITO_FALLBACK_ACTOR_ID", "logiover/avito-ru-scraper").strip()
 # Сколько часов помнить цены Авито по одному запросу (экономит деньги)
 AVITO_CACHE_HOURS: int = int(os.getenv("AVITO_CACHE_HOURS", "24"))
 

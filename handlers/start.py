@@ -91,6 +91,13 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, stat
     arg = (command.args or "").strip()
     if arg.startswith("ref_") and arg[4:].isdigit():
         await db.set_ref(user.id, int(arg[4:]))
+    # ИИ-помощник из приложения: t.me/бот?start=ai или ?start=ai_goofish_123 (с контекстом вещи)
+    if arg == "ai" or arg.startswith("ai_"):
+        from handlers.assistant import open_assistant
+        parts = arg.split("_", 2)
+        source, item_id = (parts[1], parts[2]) if len(parts) == 3 else (None, None)
+        await open_assistant(message, db, state, user.id, source, item_id)
+        return
     # Ссылка сразу на тарифы: t.me/бот?start=plans
     if arg == "plans":
         from handlers.plans_ui import plans_screen

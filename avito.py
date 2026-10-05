@@ -11,10 +11,19 @@ Goofish). По умолчанию — ahaham_bytiz/avito-scraper: на моме�
 запоминается на AVITO_CACHE_HOURS часов (по умолчанию сутки): если
 десять человек нажали «Цена в РФ» на куртку Stone Island — запрос один.
 
-Если актор выключен (AVITO_ENABLED=0) или упал — бот всё равно даст
-кнопку «Открыть поиск на Авито», чтобы посмотреть цены руками.
+Авито жёстко режет запросы: иногда сразу отвечает «429 Too Many Requests»
+(слишком много запросов с этого IP). Поэтому:
+  1. основной актор запускаем до AVITO_TRIES раз — каждый запуск получает
+     новый российский IP из жилых прокси Apify;
+  2. если не вышло — запасной актор AVITO_FALLBACK_ACTOR_ID
+     (по умолчанию logiover/avito-ru-scraper: сам меняет IP и повторяет при 429,
+     ~$2.1 за 1000 объявлений, 30 объявлений ≈ $0.06).
+
+Если актор выключен (AVITO_ENABLED=0) или все попытки не удались — бот всё
+равно даст кнопку «Открыть поиск на Авито», чтобы посмотреть цены руками.
 """
 
+import asyncio
 import logging
 import re
 import statistics
@@ -43,7 +52,7 @@ def search_url(query: str) -> str:
 
 def _price_of(item: dict) -> float | None:
     """Цена объявления: число в price, иначе цифры из priceText ('45 000 ₽')."""
-    for key in ("price", "priceValue", "priceRub"):
+    for key in ("price", "priceValue", "priceRub", "priceAmount"):
         value = item.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
@@ -53,7 +62,7 @@ def _price_of(item: dict) -> float | None:
             digits = re.sub(r"[^0-9]", "", value)
             if digits:
                 return float(digits)
-    text = item.get("priceText") or item.get("price_text")
+    text = item.get("priceText") or item.get("price_text") or item.get("priceString")
     if isinstance(text, str):
         digits = re.sub(r"[^0-9]", "", text)
         if digits:
@@ -91,11 +100,30 @@ def _stats(prices: list[float]) -> dict | None:
     }
 
 
+RU_RESIDENTIAL = {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "RU"}
+
+
+def explain(log_tail: str) -> str:
+    """Человеческое объяснение, почему актор ничего не нашёл, + хвост его лога."""
+    low = log_tail.lower()
+    if "429" in low or "too many requests" in low:
+        why = "Авито ответил 429 Too Many Requests — временно заблокировал IP прокси."
+    elif "403" in low or "captcha" in low or "капч" in low or "firewall" in low:
+        why = "Авито показал капчу или блокировку (403)."
+    elif "proxy" in low and ("not allowed" in low or "access" in low or "residential" in low):
+        why = "Apify не дал жилые прокси RU — проверь, что на аккаунте есть доступ к Residential proxy."
+    else:
+        why = "Актор отработал, но объявлений не вернул."
+    tail = " \n".join(log_tail.strip().splitlines()[-6:])
+    return f"{why}\n{tail}".strip()
+
+
 class AvitoPrices:
     def __init__(self, db: Database):
         self.db = db
         self.client = ApifyClientAsync(config.APIFY_TOKEN) if config.AVITO_ENABLED else None
-        self.last_log = ""   # хвост лога актора последнего пустого запуска — для /avitotest
+        self.last_log = ""   # почему последний запрос ничего не дал — для /avitotest
+        self.last_actor = ""  # какой актор принёс цены в последний раз
 
     @property
     def enabled(self) -> bool:
@@ -115,16 +143,9 @@ class AvitoPrices:
         if cached is not None and cached.get("median"):
             return {**base, **cached}
 
-        items: list = []
-        # 1-я попытка — жилые прокси РФ (так советует автор актора),
-        # 2-я — прокси по умолчанию, если первая ничего не принесла
-        residential = {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"], "apifyProxyCountry": "RU"}
         self.last_log = ""
-        # Ссылки в startUrls актёры принимают по-разному: объектами {"url": ...} или строками.
-        for start in ([{"url": base["url"]}], [base["url"]]):
-            items = await self._run(start, residential, query)
-            if items:
-                break
+        self.last_actor = ""
+        items = await self._fetch(base["url"], query)
 
         relevant = []
         for item in items:
@@ -140,49 +161,84 @@ class AvitoPrices:
             samples = sorted(relevant, key=lambda r: abs(r[0] - med))[:3]
             stats["samples"] = [{"title": t[:80], "price": p, "url": u} for p, t, u in samples if u]
             await self.db.save_avito(query.lower(), stats)   # пустой результат не запоминаем
-        log.info("Авито: «%s» — объявлений %d, подходящих цен %d%s", query, len(items), len(prices),
+        log.info("Авито (%s): «%s» — объявлений %d, подходящих цен %d%s", self.last_actor or "—",
+                 query, len(items), len(prices),
                  f" (пример полей: {sorted(items[0].keys())[:12]})" if items and not prices else "")
         return {**base, **stats}
 
-    async def _run(self, start: list, proxy: dict, query: str) -> list:
-        url = start[0]["url"] if isinstance(start[0], dict) else start[0]
+    async def _fetch(self, url: str, query: str) -> list:
+        """Объявления с поиска Авито: основной актор (с повторами), потом запасной."""
+        logs = []
+        for attempt in range(1, max(1, config.AVITO_TRIES) + 1):
+            items = await self._run(config.AVITO_ACTOR_ID, {
+                "startUrls": [{"url": url}],   # только так: строкой актор ссылку не принимает
+                "maxItems": config.AVITO_MAX_ITEMS,
+                "maxPagesPerUrl": 1,
+                "scrapeDetails": False,
+                "language": "ru",
+                "proxyConfiguration": RU_RESIDENTIAL,
+            }, query)
+            if items:
+                self.last_actor = config.AVITO_ACTOR_ID
+                return items
+            logs.append(f"[{config.AVITO_ACTOR_ID}, попытка {attempt}] {self.last_log}")
+            if self.last_log == "APIFY_LIMIT":
+                return []
+            if attempt < config.AVITO_TRIES:
+                await asyncio.sleep(3)
+        if config.AVITO_FALLBACK_ACTOR_ID:
+            items = await self._run(config.AVITO_FALLBACK_ACTOR_ID, {
+                "searchQueries": [query],
+                "maxItemsPerQuery": config.AVITO_MAX_ITEMS,
+                "maxResults": config.AVITO_MAX_ITEMS,
+                "proxyConfiguration": RU_RESIDENTIAL,
+            }, query)
+            if items:
+                self.last_actor = config.AVITO_FALLBACK_ACTOR_ID
+                return items
+            if self.last_log == "APIFY_LIMIT":
+                return []
+            logs.append(f"[{config.AVITO_FALLBACK_ACTOR_ID}] {self.last_log}")
+        self.last_log = "\n".join(logs)
+        return []
+
+    async def _run(self, actor_id: str, run_input: dict, query: str) -> list:
         if apify_guard.blocked():
             self.last_log = "APIFY_LIMIT"
             return []
+        self.last_log = ""
         try:
-            run = await self.client.actor(config.AVITO_ACTOR_ID).call(
-                run_input={
-                    "startUrls": start,
-                    "maxItems": config.AVITO_MAX_ITEMS,
-                    "maxPagesPerUrl": 1,
-                    "scrapeDetails": False,
-                    "language": "ru",
-                    "proxyConfiguration": proxy,
-                },
+            run = await self.client.actor(actor_id).call(
+                run_input=run_input,
                 timeout_secs=180,
                 logger=None,  # не дублировать логи актора в логи бота
             )
         except Exception as e:
-            log.warning("Авито: ошибка для «%s»: %s", query, e)
+            log.warning("Авито (%s): ошибка для «%s»: %s", actor_id, query, e)
             if apify_guard.note(e):
                 self.last_log = "APIFY_LIMIT"
             else:
                 self.last_log = f"Ошибка запуска: {e}"
             return []
         if not run:
-            log.warning("Авито: актор не вернул запуск для «%s»", query)
+            self.last_log = "Актор не вернул запуск"
+            log.warning("Авито (%s): актор не вернул запуск для «%s»", actor_id, query)
             return []
         status = run.get("status") if isinstance(run, dict) else getattr(run, "status", None)
         dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else getattr(run, "default_dataset_id", None)
         if not dataset_id:
-            log.warning("Авито: у запуска нет датасета (статус %s) для «%s»", status, query)
+            self.last_log = f"У запуска нет результатов (статус {status})"
+            log.warning("Авито (%s): у запуска нет датасета (статус %s) для «%s»", actor_id, status, query)
             return []
         try:
             page = await self.client.dataset(dataset_id).list_items(clean=True)
         except Exception as e:
-            log.warning("Авито: не прочитал результаты «%s»: %s", query, e)
+            self.last_log = f"Не прочитал результаты: {e}"
+            log.warning("Авито (%s): не прочитал результаты «%s»: %s", actor_id, query, e)
             return []
         items = page.items if hasattr(page, "items") else page.get("items", [])
+        # Запасной актор помечает отказы Авито строками со статусом blocked — это не объявления
+        items = [i for i in items if isinstance(i, dict) and not i.get("blocked") and i.get("status") != "blocked"]
         if not items:
             # Почему пусто — смотрим хвост лога самого актора (видно блокировки, капчу, ошибки ввода)
             run_id = run.get("id") if isinstance(run, dict) else getattr(run, "id", None)
@@ -192,10 +248,10 @@ class AvitoPrices:
                     tail = (await self.client.run(run_id).log().get() or "")[-1500:]
                 except Exception as e:
                     tail = f"(лог не прочитался: {e})"
-            self.last_log = tail
-            log.warning("Авито: актор отработал со статусом %s, но объявлений нет («%s», %s). Конец лога: %s",
-                        status, query, url, " | ".join(tail.strip().splitlines()[-8:])[:900])
-        return [i for i in items if isinstance(i, dict)]
+            self.last_log = explain(tail)
+            log.warning("Авито (%s): статус %s, объявлений нет («%s»). Конец лога: %s",
+                        actor_id, status, query, " | ".join(tail.strip().splitlines()[-8:])[:900])
+        return items
 
     async def close(self) -> None:
         return None

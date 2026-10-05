@@ -149,6 +149,28 @@ def price_text(price_min: float | None, price_max: float | None, with_rub: bool 
     return text
 
 
+async def feed_days(db: Database, user_id: int) -> int:
+    """Сколько дней лента хранит находки — зависит от тарифа (START 3, PRO 7, ELITE 14)."""
+    return (await user_plan(db, user_id)).feed_days
+
+
+async def feed_since(db: Database, user_id: int) -> int:
+    return int(time.time()) - await feed_days(db, user_id) * 86400
+
+
+def days_text(n: int) -> str:
+    return f"{n} {plural(n, 'день', 'дня', 'дней')}"
+
+
+def upsell_kb(feature_plan: "plans.Plan | None", back: str | None = None) -> InlineKeyboardMarkup:
+    """Кнопки «Открыть PRO/ELITE» + назад — под подсказкой о том, чего нет на тарифе."""
+    rows = []
+    if feature_plan:
+        rows.append([btn(f"💎 Подключить {feature_plan.title}", f"pl:p:{feature_plan.code}")])
+    rows.append([btn("Все тарифы", "pl:open")] + ([btn("‹ Назад", back)] if back else []))
+    return kb(*rows)
+
+
 def brand_limits_text(plan: plans.Plan, total: int, own: int) -> str:
     text = f"{total} из {plan.brands}"
     if plan.own_brands and plan.own_brands < 100:

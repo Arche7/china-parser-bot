@@ -35,6 +35,25 @@ def approx_rub(stars_amount: int) -> str:
     return plans.rub(stars_amount * config.STAR_RUB_BUY)
 
 
+def compare_table() -> str:
+    """Таблица сравнения тарифов моноширинным шрифтом (в Telegram выглядит ровно)."""
+    names = [p.title for p in plans.PAID_PLANS]
+    short = {
+        "Брендов (своих)": "Бренды (свои)", "Проверка каталога": "Проверка", "⚡ Находка сразу": "Сразу",
+        "Первым среди всех": "Первым", "Все фото вещи": "Все фото", "🤖 ИИ-помощник продавца": "ИИ-помощник",
+        "Легит-чеков": "Легит-чеки", "Сравнений с Авито": "Авито", "Лента хранит": "Лента",
+    }
+    rows = [("", names)] + [(short.get(r["label"], r["label"]), [v.replace(" мин", "м").replace(" дн.", "д")
+                                                              .replace("/мес", "") for v in r["values"]])
+                           for r in plans.comparison_rows()]
+    w0 = max(len(r[0]) for r in rows)
+    widths = [max(len(r[1][i]) for r in rows) for i in range(len(names))]
+    out = []
+    for label, values in rows:
+        out.append(label.ljust(w0) + "  " + "  ".join(v.rjust(widths[i]) for i, v in enumerate(values)))
+    return "<pre>" + esc("\n".join(out)) + "</pre>"
+
+
 async def plans_screen(db: Database, user_id: int):
     user = await db.get_user(user_id)
     current = await user_plan(db, user_id)
@@ -46,9 +65,15 @@ async def plans_screen(db: Database, user_id: int):
         lines.append(f"Сейчас: <b>{esc(current.title)}</b> до {human_date(user['sub_until'])}\n")
     for p in plans.PAID_PLANS:
         mark = " ← твой" if active and p.code == current.code else ""
-        lines.append(f"<b>{p.title}</b> — {plans.stars(p.price_stars)} в месяц{mark}")
-        lines.append(f"<i>{esc(p.tagline)}</i>")
-        lines.append(f"{p.brands} брендов · каждые {p.interval_min} мин · {p.legit_checks} легит-чеков\n")
+        lines.append(f"<b>{p.title}</b> — {plans.stars(p.price_stars)} в месяц{mark} · <i>{esc(p.tagline)}</i>")
+    lines.append("")
+    lines.append(compare_table())
+    lines.append("")
+    lines.append("<b>Чем PRO лучше START:</b> находка приходит сразу, а не сводкой через полчаса; "
+                 "проверка вдвое чаще; все фото вещи; лента за неделю.")
+    lines.append("<b>Чем ELITE лучше PRO:</b> 🤖 ИИ-помощник ведёт переписку с продавцом — переводит скрины, "
+                 "пишет ответ на китайском, подсказывает, как торговаться и какие фото попросить, "
+                 "и уточняет легит-чек по каждому новому фото. Плюс находка приходит тебе раньше всех.\n")
     lines.append(f"➕ <b>Свой бренд</b> (которого нет в каталоге) — +1 место за "
                  f"{plans.stars(plans.OWN_ADDON_STARS)} в месяц к любому тарифу. "
                  f"Проверяется каждые {plans.OWN_BRAND_INTERVAL_MIN} мин.\n")

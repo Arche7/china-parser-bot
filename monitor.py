@@ -92,9 +92,26 @@ def union_range(watches: list) -> tuple[float | None, float | None]:
     return low, high
 
 
+def plan_of(watch) -> plans.Plan:
+    """Тариф подписчика по строке из active_watches (там есть plan и is_admin)."""
+    return plans.ADMIN if watch["is_admin"] else plans.get_plan(watch["plan"])
+
+
+def notify_mode(plan: plans.Plan, settings: dict) -> tuple[str, int]:
+    """
+    Режим уведомлений с учётом тарифа: ('digest' | 'instant' | 'off', раз в сколько минут сводка).
+    На START режима «Сразу» нет — такие находки приходят сводкой.
+    """
+    mode = settings.get("notify", "digest")
+    if mode == "instant" and not plan.instant:
+        mode = "digest"
+    every = max(int(settings.get("every") or 30), plan.digest_min)
+    return mode, every
+
+
 def watch_interval(watch) -> int:
     """Как часто проверять бренд для конкретного подписчика, минут."""
-    plan = plans.ADMIN if watch["is_admin"] else plans.get_plan(watch["plan"])
+    plan = plan_of(watch)
     interval = plan.interval_min
     if not brands.is_catalog(watch["keyword"]):
         interval = max(interval, plan.own_interval_min)
@@ -314,8 +331,10 @@ class Monitor:
             # Сразу присылаем только тем, кто выбрал «каждое сразу»; остальным
             # придёт одна сводка (см. send_digests).
             translations = await self._translate(new_good)
+            # ELITE получает находку первым, потом PRO, потом остальные
+            ordered = sorted(watches, key=lambda w: -plan_of(w).priority)
             for listing in reversed(new_good):  # от старых к новым
-                for watch in watches:
+                for watch in ordered:
                     if price_matches(listing, watch["price_min"], watch["price_max"]):
                         await self.deliver_new(watch, listing, keyword, translations.get(listing.id))
             return good
@@ -412,7 +431,7 @@ class Monitor:
             data["title_ru"] = title_ru
         await self.db.save_listing(listing.source, listing.id, keyword, data)
         settings = await self._settings(user_id)
-        instant = settings.get("notify") == "instant"
+        instant = notify_mode(plan_of(watch), settings)[0] == "instant"
         grp = group_of(decode(listing.title).category)
         if not await self.db.add_feed(user_id, listing.source, listing.id, keyword, grp, notified=instant):
             return  # уже было в ленте (нашлось по другому написанию)
@@ -424,17 +443,23 @@ class Monitor:
     # Сводки: одно сообщение вместо десятков
     # ------------------------------------------------------------------
 
+    async def user_plan(self, user_id: int) -> plans.Plan:
+        if user_id in config.ADMIN_IDS:
+            return plans.ADMIN
+        return plans.get_plan(await self.db.user_plan_code(user_id))
+
     async def send_digests(self) -> None:
         now = time.time()
         for user_id in await self.db.users_with_pending():
             settings = await self._settings(user_id)
-            mode = settings.get("notify", "digest")
+            plan = await self.user_plan(user_id)
+            mode, every_min = notify_mode(plan, settings)
             if mode == "instant":
                 await self.db.mark_notified(user_id)
                 continue
             if mode == "off":
                 continue  # копится в ленте, без уведомлений
-            every = int(settings.get("every") or 30) * 60
+            every = every_min * 60
             if now - float(settings.get("last_digest") or 0) < every - 30:
                 continue
             user = await self.db.get_user(user_id)
@@ -451,14 +476,15 @@ class Monitor:
                     await self.bot.delete_message(user_id, old_msg)
                 except Exception:
                     pass
-                unseen = await self.db.feed_page(user_id, since=int(now) - config.FEED_DAYS * 86400,
+                unseen = await self.db.feed_page(user_id, since=int(now) - plan.feed_days * 86400,
                                                  view="new", limit=200)
                 have = {(r["source"], r["item_id"]) for r in pending}
                 extra = [r for r in unseen if (r["source"], r["item_id"]) not in have]
                 pending = list(pending) + extra
             else:
                 extra = []
-            sent_id = await self._send_digest(user_id, pending, settings, merged=bool(extra))
+            sent_id = await self._send_digest(user_id, pending, {**settings, "every": every_min},
+                                              merged=bool(extra))
             if sent_id:
                 await self.db.mark_notified(user_id)
                 await self.db.update_settings(user_id, last_digest=int(now), digest_msg=sent_id)

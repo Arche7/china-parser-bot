@@ -25,13 +25,15 @@ from db import Database
 from decoder import GROUPS
 from aiogram.filters import Command
 
-from handlers.common import BTN_FEED, back_home, btn, kb, safe_answer, show
-from monitor import Monitor
+from handlers.common import (
+    BTN_FEED, back_home, btn, days_text, feed_days, feed_since, kb, safe_answer, show, upsell_kb, user_plan,
+)
+import plans
+from monitor import Monitor, notify_mode
 
 log = logging.getLogger(__name__)
 router = Router(name="feed")
 
-WEEK = config.FEED_DAYS * 86400   # лента хранит находки за столько дней
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 NO_PHOTO = os.path.join(ASSETS, "home.jpg")
 
@@ -39,7 +41,7 @@ NO_PHOTO = os.path.join(ASSETS, "home.jpg")
 async def resolve_filter(db: Database, user_id: int, ftype: str, fval: str) -> tuple[str | None, str | None, str]:
     """(бренд, раздел, подпись фильтра)"""
     if ftype == "b":
-        facets = await db.feed_facets(user_id, since=int(time.time()) - WEEK)
+        facets = await db.feed_facets(user_id, since=await feed_since(db, user_id))
         for key in facets["brands"]:
             if cards.brand_code(key) == fval:
                 return key, None, brands.display_name(key)
@@ -52,10 +54,10 @@ async def resolve_filter(db: Database, user_id: int, ftype: str, fval: str) -> t
 async def show_item(callback: CallbackQuery, db: Database, ftype: str, fval: str, idx: int) -> None:
     user_id = callback.from_user.id
     brand, grp, label = await resolve_filter(db, user_id, ftype, fval)
-    since = int(time.time()) - WEEK
+    since = await feed_since(db, user_id)
     total = await db.feed_count(user_id, brand=brand, grp=grp, since=since)
     if total == 0:
-        await show(callback, f"📰 <b>Лента пуста</b>\n\nЗа {config.FEED_DAYS} дня здесь ничего не нашлось. "
+        await show(callback, f"📰 <b>Лента пуста</b>\n\nЗа {days_text(await feed_days(db, user_id))} здесь ничего не нашлось. "
                              "Добавь бренды или расширь бюджет — и находки появятся.",
                    kb([btn("🎯 Бренды", "b:list")], back_home()))
         return
@@ -99,14 +101,14 @@ async def cb_view_fav(callback: CallbackQuery, db: Database) -> None:
     _, _, ftype, fval, idx = callback.data.split(":", 4)
     user_id = callback.from_user.id
     brand, grp, _ = await resolve_filter(db, user_id, ftype, fval)
-    items = await db.feed_page(user_id, brand=brand, grp=grp, since=int(time.time()) - WEEK, limit=1, offset=int(idx))
+    items = await db.feed_page(user_id, brand=brand, grp=grp, since=await feed_since(db, user_id), limit=1, offset=int(idx))
     if not items:
         await safe_answer(callback)
         return
     now_fav = await db.toggle_favorite(user_id, items[0]["source"], items[0]["item_id"])
     await safe_answer(callback, "⭐ В избранном" if now_fav else "Убрал из избранного")
     items[0]["fav"] = now_fav
-    total = await db.feed_count(user_id, brand=brand, grp=grp, since=int(time.time()) - WEEK)
+    total = await db.feed_count(user_id, brand=brand, grp=grp, since=await feed_since(db, user_id))
     try:
         await callback.message.edit_reply_markup(
             reply_markup=cards.viewer_keyboard(items[0], ftype, fval, int(idx), total))
@@ -120,7 +122,7 @@ async def cb_hide(callback: CallbackQuery, db: Database) -> None:
     _, _, ftype, fval, idx = callback.data.split(":", 4)
     user_id = callback.from_user.id
     brand, grp, _ = await resolve_filter(db, user_id, ftype, fval)
-    items = await db.feed_page(user_id, brand=brand, grp=grp, since=int(time.time()) - WEEK, limit=1, offset=int(idx))
+    items = await db.feed_page(user_id, brand=brand, grp=grp, since=await feed_since(db, user_id), limit=1, offset=int(idx))
     if items:
         await db.set_feed_hidden(user_id, items[0]["source"], items[0]["item_id"], True)
     await safe_answer(callback, "Скрыл — больше не покажу")
@@ -149,8 +151,9 @@ async def cb_close(callback: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.startswith("fd:m:"))
 async def cb_filter_menu(callback: CallbackQuery, db: Database) -> None:
     user_id = callback.from_user.id
-    facets = await db.feed_facets(user_id, since=int(time.time()) - WEEK)
+    facets = await db.feed_facets(user_id, since=await feed_since(db, user_id))
     total = sum(facets["groups"].values())
+    days = await feed_days(db, user_id)
     rows = [[btn(f"Всё · {total}", "fd:v:all:-:0")]]
     groups = [btn(f"{g} · {n}", f"fd:v:g:{g}:0") for g, n in facets["groups"].items()]
     rows += [groups[i:i + 2] for i in range(0, len(groups), 2)]
@@ -159,20 +162,21 @@ async def cb_filter_menu(callback: CallbackQuery, db: Database) -> None:
     rows += [chips[i:i + 2] for i in range(0, len(chips), 2)]
     rows.append(back_home())
     await safe_answer(callback)
-    await show(callback, f"🗂 <b>Что показать?</b>\n\nНаходки за {config.FEED_DAYS} дня — по разделам и брендам.", kb(*rows))
+    await show(callback, f"🗂 <b>Что показать?</b>\n\nНаходки за {days_text(days)} — по разделам и брендам.", kb(*rows))
 
 
 @router.message(F.text == BTN_FEED)
 @router.message(Command("feed"))
 async def msg_feed(message: Message, db: Database) -> None:
-    facets = await db.feed_facets(message.from_user.id, since=int(time.time()) - WEEK)
+    user_id = message.from_user.id
+    facets = await db.feed_facets(user_id, since=await feed_since(db, user_id))
     total = sum(facets["groups"].values())
     if not total:
         await message.answer("📰 Лента пока пуста — новые находки появятся здесь.",
                              reply_markup=kb([btn("🎯 Бренды", "b:list")]))
         return
-    new = await db.feed_count(message.from_user.id, since=int(time.time()) - WEEK, view="new")
-    await message.answer(f"📰 <b>Лента</b> · {new} новых · {total} за {config.FEED_DAYS} дня",
+    new = await db.feed_count(user_id, since=await feed_since(db, user_id), view="new")
+    await message.answer(f"📰 <b>Лента</b> · {new} новых · {total} за {days_text(await feed_days(db, user_id))}",
                          reply_markup=kb([btn("▶️ Смотреть все", "fd:v:all:-:0")], [btn("🗂 По разделам и брендам", "fd:m:all:-:0")]))
 
 
@@ -191,28 +195,35 @@ EVERY = [15, 30, 60, 180]
 async def notify_screen(db: Database, user_id: int):
     s = await db.get_settings(user_id)
     user = await db.get_user(user_id)
-    mode = s.get("notify", "digest")
-    every = int(s.get("every") or 30)
+    plan = await user_plan(db, user_id)
+    mode, every = notify_mode(plan, s)
     paused = bool(user and user["paused"])
     every_txt = f"{every} мин" if every < 60 else f"{every // 60} ч"
     explain = {
         "digest": f"раз в {every_txt} приходит <b>одно</b> сообщение: «12 новых · LV 5 · Gucci 4». "
                   "Листаешь находки прямо в нём. Лучший вариант, если брендов много.",
         "instant": "каждая находка приходит <b>отдельным</b> сообщением в ту же минуту, как радар её поймал. "
-                   "Быстрее всего, но сообщений много.",
+                   "Пишешь продавцу раньше всех — хорошие вещи по хорошей цене уходят за часы.",
         "off": "в чат ничего не приходит. Всё копится в <b>ленте</b> — кнопка «📰 Лента» на главной "
                "и приложение HUNTR. Смотришь, когда удобно.",
     }
     lines = ["🔔 <b>Уведомления</b>", "", "Как бот сообщает о новых находках:", ""]
     for m, label in MODES.items():
-        lines.append(f"{'✅' if m == mode else '▫️'} <b>{label}</b> — {explain[m]}")
+        lock = m == "instant" and not plan.instant
+        mark = "🔒" if lock else ("✅" if m == mode else "▫️")
+        lines.append(f"{mark} <b>{label}</b> — {explain[m]}"
+                     + (" <i>Есть в PRO и ELITE.</i>" if lock else ""))
         lines.append("")
+    if not plan.instant and s.get("notify") == "instant":
+        lines.append("ℹ️ На твоём тарифе находки приходят сводкой. «Сразу» — в PRO и ELITE.\n")
     if paused:
         lines.append("⏸ <b>Сейчас пауза</b> — радар не ищет и ничего не присылает.\n")
     lines.append(f"🌙 Ночью без звука (00–08 МСК): {'да' if s.get('quiet') else 'нет'}")
-    rows = [[btn(("✅ " if m == mode else "") + label, f"nt:m:{m}") for m, label in MODES.items()]]
+    rows = [[btn(("✅ " if m == mode else "") + ("🔒 " if m == "instant" and not plan.instant else "") + label,
+                 f"nt:m:{m}") for m, label in MODES.items()]]
     if mode == "digest":
-        rows.append([btn(("● " if e == every else "") + (f"{e} мин" if e < 60 else f"{e // 60} ч"), f"nt:e:{e}")
+        rows.append([btn(("● " if e == every else "") + ("🔒 " if e < plan.digest_min else "")
+                         + (f"{e} мин" if e < 60 else f"{e // 60} ч"), f"nt:e:{e}")
                      for e in EVERY])
     rows.append([btn("🌙 Ночью без звука: " + ("вкл" if s.get("quiet") else "выкл"), "nt:q")])
     rows.append([btn("▶️ Снять с паузы" if paused else "⏸ Пауза", "nt:p")])
@@ -220,10 +231,28 @@ async def notify_screen(db: Database, user_id: int):
     return "\n".join(lines), kb(*rows)
 
 
+INSTANT_UPSELL = (
+    "⚡ <b>«Сразу» — в PRO и ELITE</b>\n\n"
+    "На START находки приходят сводкой раз в 30 минут. С «Сразу» карточка вещи прилетает "
+    "в ту же минуту, как радар её поймал, — и ты пишешь продавцу первым.\n\n"
+    "На Goofish хорошие вещи по хорошей цене уходят за часы, а иногда за минуты. "
+    "В ELITE находка к тому же приходит раньше, чем подписчикам START и PRO."
+)
+
+
 @router.callback_query(F.data.startswith("nt:"))
 async def cb_notify(callback: CallbackQuery, db: Database, monitor: Monitor) -> None:
     user_id = callback.from_user.id
     parts = callback.data.split(":")
+    plan = await user_plan(db, user_id)
+    if parts[1] == "m" and parts[2] == "instant" and not plan.instant:
+        await safe_answer(callback)
+        await show(callback, INSTANT_UPSELL, upsell_kb(plans.next_plan_with("instant"), back="nt:open"))
+        return
+    if parts[1] == "e" and parts[2].isdigit() and int(parts[2]) < plan.digest_min:
+        await safe_answer(callback, f"На {plan.title} сводка не чаще раза в {plan.digest_min} мин. "
+                                    "Чаще — или сразу — в PRO и ELITE", alert=True)
+        return
     if parts[1] == "m" and parts[2] in MODES:
         await db.update_settings(user_id, notify=parts[2])
     elif parts[1] == "e" and parts[2].isdigit() and int(parts[2]) in EVERY:

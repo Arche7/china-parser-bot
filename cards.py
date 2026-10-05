@@ -137,7 +137,7 @@ def card_keyboard(source: str, item_id: str, url: str, is_fav: bool = False) -> 
         ],
         [
             InlineKeyboardButton(text="★ В избранном" if is_fav else "☆ В избранное", callback_data=f"l:fv:{ref}"),
-            InlineKeyboardButton(text="💬 Фразы продавцу", callback_data=f"l:ph:{ref}"),
+            InlineKeyboardButton(text="💬 Продавцу", callback_data=f"as:l:{ref}"),
         ],
     ])
 
@@ -349,7 +349,8 @@ def viewer_keyboard(item: dict, ftype: str, fval: str, idx: int, total: int) -> 
         [InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
          InlineKeyboardButton(text="📊 Выгода и Авито", callback_data=f"l:pr:{ref}")],
         [InlineKeyboardButton(text="★ В избранном" if item["fav"] else "☆ В избранное",
-                              callback_data=f"fd:f:{ftype}:{fval}:{idx}")],
+                              callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
+         InlineKeyboardButton(text="💬 Продавцу", callback_data=f"as:l:{ref}")],
         [InlineKeyboardButton(text="🗂 Фильтр", callback_data=f"fd:m:{ftype}:{fval}:0"),
          InlineKeyboardButton(text="‹ Главная", callback_data="h:home")],
     ])

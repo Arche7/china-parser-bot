@@ -249,6 +249,21 @@ input{font-family:inherit}
 .plan li::before{content:'';position:absolute;left:2px;top:6px;width:8px;height:5px;border-left:2px solid var(--lime);border-bottom:2px solid var(--lime);transform:rotate(-45deg)}
 .plan .btns{display:flex;gap:8px;margin-top:14px}
 .plan .btns .btn{height:48px;border-radius:14px;font-size:14px}
+.cmp{border-radius:22px;padding:6px 4px;overflow-x:auto}
+.cmp table{width:100%;border-collapse:collapse;font-size:13px}
+.cmp th,.cmp td{padding:8px 6px;text-align:center;white-space:nowrap}
+.cmp th{font-family:var(--display);font-weight:800;font-size:13px;color:var(--soft)}
+.cmp th.cur{color:var(--lime)}
+.cmp td:first-child,.cmp th:first-child{text-align:left;color:var(--muted2);font-weight:600;white-space:normal;padding-left:12px}
+.cmp tr+tr td{border-top:1px solid rgba(255,255,255,.06)}
+.cmp td.y{color:var(--lime);font-weight:800}
+.cmp td.n{color:#5d625b}
+.lock{display:inline-flex;vertical-align:-2px;margin-right:3px;opacity:.8}
+.aibtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border-radius:20px;padding:14px 16px;margin-top:12px}
+.aibtn > svg{flex:none;width:42px;height:42px;padding:10px;border-radius:14px;background:rgba(212,255,58,.12);color:var(--lime)}
+.aibtn b{display:block;font-size:15px}
+.aibtn small{display:block;font-size:12px;color:var(--muted);margin-top:2px;line-height:1.35}
+.aibtn .elite{margin-left:auto;flex:none;font-size:10px;font-weight:800;letter-spacing:.05em;padding:4px 7px;border-radius:7px;background:rgba(212,255,58,.13);color:var(--lime)}
 .empty{border-radius:24px;padding:26px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px}
 .empty b{font-size:17px}
 .full{position:absolute;inset:0;z-index:30;display:flex;flex-direction:column;padding:calc(var(--top) + 28px) 20px calc(var(--bottom) + 28px)}
@@ -712,8 +727,12 @@ function galleryHTML(k) {
       <div class="gdots" id="gdots" aria-hidden="true">${imgs.map((_, i) => `<i${i ? '' : ' class="on"'}></i>`).join('')}</div>
       <div class="tag" id="gcount">1 / ${imgs.length}</div>${favBtn}</div>`;
   }
+  const cam = svg('M4 7h3l2-2h6l2 2h3v12H4z M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8', 15, 1.8);
+  const canAll = !S.me || S.me.plan.all_photos !== false;
   const more = !it.photos_loaded && it.image
-    ? `<button class="tag press gmore" data-act="photos" data-key="${esc(k)}"${st.ploading ? ' disabled' : ''}>${st.ploading ? 'Загружаю фото…' : svg('M4 7h3l2-2h6l2 2h3v12H4z M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8', 15, 1.8) + ' Все фото'}</button>`
+    ? (canAll
+      ? `<button class="tag press gmore" data-act="photos" data-key="${esc(k)}"${st.ploading ? ' disabled' : ''}>${st.ploading ? 'Загружаю фото…' : cam + ' Все фото'}</button>`
+      : `<button class="tag press gmore" data-act="upsell" data-f="photos">${cam} Все фото · PRO</button>`)
     : `<div class="tag">Фото с Goofish</div>`;
   return `${thumbHTML(it, 'photo', true)}${more}${favBtn}</div>`;
 }
@@ -728,7 +747,7 @@ async function loadPhotos(k) {
     if (r.status) { it.status = r.status; const sb = $('statusBox'); if (sb) sb.innerHTML = statusBanner(it); }
     if (r.error) toast(r.error === 'apify_limit' ? 'Фото сейчас не загрузить — сервис поиска на паузе. Попробуй позже' : 'Не получилось загрузить фото — попробуй позже');
     else { it.photos_loaded = true; if (it.images.length <= 1) toast('У этого объявления одно фото'); hapticNote('success'); }
-  } catch (e) { fail(e); }
+  } catch (e) { if (e.status === 403 && e.error === 'plan_photos') upsell('photos'); else fail(e); }
   st.ploading = false; rerenderGallery(k);
 }
 document.addEventListener('scroll', e => {
@@ -752,6 +771,7 @@ function itemHTML(k) {
     ${pills ? `<div class="pills" style="margin-top:12px">${pills}</div>` : ''}
     <div class="glass box" style="margin-top:16px" id="profitBox">${profitBox(k)}</div>
     <div class="glass box" style="margin-top:12px" id="legitBox">${legitBox(k)}</div>
+    <button class="glass press aibtn" data-act="assistant" data-key="${esc(k)}">${svg(ICON.chat, 22)}<span><b>Переписка с продавцом · ИИ</b><small>Скрин чата → перевод, ответ на китайском, торг и риск по новым фото</small></span>${S.me && S.me.plan.assistant ? '' : '<span class="elite">ELITE</span>'}</button>
     <div class="row" style="margin-top:16px;gap:8px">
       <button class="btn lime press" style="flex:1;min-width:0;height:54px;font-size:15px" data-act="open" data-key="${esc(k)}">Открыть на Goofish ↗</button>
       <button class="glass press sq" data-act="phrases" data-key="${esc(k)}" aria-label="Фразы продавцу на китайском" aria-expanded="${st.phrases}">${svg(ICON.chat)}</button>
@@ -997,11 +1017,20 @@ function meter(label, left, total, used) {
   const value = used ? `${num(left)} / ${num(total)}` : `осталось ${num(left)} из ${num(total)}`;
   return `<div class="meter"><div class="between" style="font-size:13px"><span style="color:var(--muted2)">${label}</span><b style="font-weight:700">${value}</b></div><div class="bar"><div style="width:${used ? pct : 100 - pct}%"></div></div></div>`;
 }
+function compareHTML() {
+  const P = S.plans; if (!P || !P.compare) return '';
+  const cur = S.me && S.me.access ? S.me.plan.code : null;
+  const cell = v => v === '✓' ? '<td class="y">✓</td>' : v === '—' ? '<td class="n">—</td>' : `<td>${esc(v)}</td>`;
+  return `<div class="glass cmp rise" role="region" aria-label="Сравнение тарифов"><table>
+    <tr><th></th>${P.plans.map(p => `<th class="${p.code === cur ? 'cur' : ''}">${esc(p.title)}</th>`).join('')}</tr>
+    ${P.compare.map(r => `<tr><td>${esc(r.label)}</td>${r.values.map(cell).join('')}</tr>`).join('')}
+  </table></div>`;
+}
 function planCards() {
   const P = S.plans;
   if (!P) return '<div class="glass skel" style="height:190px;border-radius:24px"></div>'.repeat(2);
   const me = S.me, cur = me.access ? me.plan.code : null;
-  return P.plans.map((p, i) => {
+  return compareHTML() + P.plans.map((p, i) => {
     const isCur = p.code === cur, soldOut = p.seats_left === 0;
     let btns;
     if (!P.payments_enabled) btns = `<div class="foot">Оплата временно недоступна — загляни чуть позже.</div>`;
@@ -1017,6 +1046,28 @@ function planCards() {
       ${btns}</div>`;
   }).join('');
 }
+const LOCK = `<span class="lock" aria-hidden="true">${svg('M7 11V8a5 5 0 0 1 10 0v3 M5 11h14v10H5z', 13, 2)}</span>`;
+const UPSELL = {
+  instant: ['«Сразу» — в PRO и ELITE', 'Находка прилетает в ту же минуту, как радар её поймал, — и ты пишешь продавцу первым. На START — сводка раз в 30 минут.'],
+  photos: ['Все фото вещи — с PRO', 'На START видно только обложку. В PRO и ELITE — вся галерея объявления: бирки, швы, фурнитура.'],
+  assistant: ['ИИ-помощник — в ELITE', 'Кидаешь скрин переписки с продавцом — ИИ переводит, объясняет, что он имел в виду, пишет ответ на китайском, помогает торговаться и уточняет риск подделки по каждому новому фото.'],
+};
+function upsell(f) {
+  const u = UPSELL[f] || UPSELL.assistant;
+  hapticNote('warning');
+  openSheet(`<h2 class="h1" style="font-size:22px">${esc(u[0])}</h2><div class="txt" style="margin-top:10px">${esc(u[1])}</div>
+    <button class="btn lime press" style="margin-top:18px;width:100%;height:52px" data-act="toPlans">Сравнить тарифы</button>`, 'upsell');
+}
+function openAssistant(k) {
+  const me = S.me;
+  if (!me.plan.assistant) { upsell('assistant'); return; }
+  if (!me.bot) { toast('Открой бота и нажми «🤖 ИИ-помощник» на главной'); return; }
+  const it = k ? S.items[k] : null;
+  const payload = it ? `ai_${it.source}_${it.item_id}` : 'ai';
+  const link = `https://t.me/${me.bot}?start=${encodeURIComponent(payload)}`;
+  if (tg && tg.openTelegramLink) { tg.openTelegramLink(link); if (tg.close) setTimeout(() => tg.close(), 300); }
+  else openLink(link);
+}
 function profileScreen() {
   const me = S.me, p = me.plan, s = me.settings;
   const modes = [['digest', 'Сводкой'], ['instant', 'Сразу'], ['off', 'Только лента']];
@@ -1028,11 +1079,14 @@ function profileScreen() {
       ${meter('Бренды', me.counts.brands, p.brands, true)}
       ${meter('Легит-чеки', p.legit_left, p.legit_checks)}
       ${meter('Сравнения с Авито', p.price_left, p.price_checks)}
+      ${p.assistant ? meter('ИИ-помощник, сообщений', p.assistant_left, p.assistant) : ''}
     </div>
+    <button class="glass press aibtn rise" data-act="assistant">${svg(ICON.chat, 22)}<span><b>ИИ-помощник по переписке</b><small>Перевод скринов, ответ на китайском, торг, риск подделки по фото</small></span>${p.assistant ? '' : '<span class="elite">ELITE</span>'}</button>
     <div class="glass box rise" style="animation-delay:60ms"><h3>Уведомления в боте</h3>
       <div class="seg" role="radiogroup" aria-label="Как присылать находки"><div class="ind" style="transform:translateX(${mi * 100}%)"></div>
-        ${modes.map(([v, l]) => `<button class="press${s.notify === v ? ' on' : ''}" role="radio" aria-checked="${s.notify === v}" data-act="notify" data-v="${v}">${l}</button>`).join('')}</div>
-      ${s.notify === 'digest' ? `<div class="label" style="margin-top:14px">Сводка раз в</div><div class="wrapchips">${[15, 30, 60, 180].map(n => `<button class="chip press${s.every === n ? ' on' : ''}" data-act="every" data-v="${n}">${n < 60 ? n + ' мин' : n / 60 + ' ч'}</button>`).join('')}</div>` : ''}
+        ${modes.map(([v, l]) => { const lock = v === 'instant' && p.instant === false; return `<button class="press${s.notify === v ? ' on' : ''}" role="radio" aria-checked="${s.notify === v}" data-act="${lock ? 'upsell' : 'notify'}" data-f="instant" data-v="${v}">${lock ? LOCK : ''}${l}</button>`; }).join('')}</div>
+      ${p.instant === false ? `<div class="foot" style="margin-top:8px">${LOCK}«Сразу» — в PRO и ELITE: находка приходит в ту же минуту, а не сводкой.</div>` : ''}
+      ${s.notify === 'digest' ? `<div class="label" style="margin-top:14px">Сводка раз в</div><div class="wrapchips">${[15, 30, 60, 180].map(n => { const lock = n < (p.digest_min || 0); return `<button class="chip press${s.every === n ? ' on' : ''}" data-act="${lock ? 'upsell' : 'every'}" data-f="instant" data-v="${n}">${lock ? LOCK : ''}${n < 60 ? n + ' мин' : n / 60 + ' ч'}</button>`; }).join('')}</div>` : ''}
       <div class="nexpl">${[
         ['digest', 'Сводкой', `раз в ${s.every || 30} мин приходит одно сообщение: «12 новых · LV 5 · Gucci 4». Листаешь находки прямо в нём. Лучший вариант, если брендов много.`],
         ['instant', 'Сразу', 'каждая находка приходит отдельным сообщением в ту же минуту, как радар её поймал. Быстрее всех, но сообщений много.'],
@@ -1161,6 +1215,8 @@ const ACT = {
   profit: el => runProfit(el.dataset.key),
   legit: el => runLegit(el.dataset.key),
   photos: el => loadPhotos(el.dataset.key),
+  upsell: el => upsell(el.dataset.f),
+  assistant: el => openAssistant(el.dataset.key),
   phrases: el => { const st = ist(el.dataset.key); st.phrases = !st.phrases; el.setAttribute('aria-expanded', st.phrases); $('phrasesBox').innerHTML = st.phrases ? phrasesHTML() : ''; if (st.phrases) $('phrasesBox').scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'nearest' }); },
   copy: async el => { const p = PHRASES[+el.dataset.i]; await copyText(p[0]); hapticNote('success'); toast(p[0] + ' — скопировано'); },
   toPlans: () => { closeSheet(); goTab('profile'); setTimeout(() => { const h = [...document.querySelectorAll('#view h2')].pop(); if (h) h.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' }); }, 450); },

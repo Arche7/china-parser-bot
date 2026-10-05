@@ -44,6 +44,7 @@ async def set_profile(bot: Bot) -> None:
         BotCommand(command="feed", description="Лента находок"),
         BotCommand(command="add", description="Добавить бренд"),
         BotCommand(command="list", description="Мои бренды"),
+        BotCommand(command="ai", description="ИИ-помощник: переписка с продавцом"),
         BotCommand(command="help", description="Как это работает"),
         BotCommand(command="paysupport", description="Вопросы по оплате"),
     ])

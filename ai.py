@@ -178,3 +178,107 @@ async def legit_check(
         value = data.get(key)
         data[key] = [str(x) for x in value][:4] if isinstance(value, list) else []
     return data
+
+
+# ----------------------------------------------------------------------
+# ИИ-помощник по переписке с продавцом (тариф ELITE)
+# ----------------------------------------------------------------------
+
+_ASSISTANT_PROMPT = (
+    "Ты — ИИ-помощник байера из России, который покупает брендовые вещи на китайской барахолке "
+    "Goofish (闲鱼) и переписывается с продавцами. Тебе присылают скриншоты переписки (Goofish, WeChat), "
+    "фото вещи от продавца, китайский текст или вопрос по-русски. Помогаешь:\n"
+    "1) перевести, что написал продавец, и объяснить, что он имел в виду (сленг, намёки, уловки);\n"
+    "2) написать готовый ответ продавцу на естественном разговорном китайском, как пишут на Goofish, "
+    "коротко и вежливо, и дать его перевод;\n"
+    "3) подсказать, как торговаться: реалистичная цена, вежливые формулировки (诚心要, 能便宜点吗, 包邮吗), "
+    "когда лучше не давить;\n"
+    "4) сказать, каких фото не хватает для проверки подлинности (бирки, QR/NFC-код, швы, фурнитура, "
+    "дата-код, коробка, чек) — конкретно для этой вещи;\n"
+    "5) если пришли фото вещи — уточнить оценку риска подделки с учётом прошлой оценки: после каждого "
+    "нового фото говори, стало лучше, хуже или без изменений, и почему, со ссылкой на номер фото.\n"
+    "Правила: никогда не обещай «100% оригинал» — это только оценка риска. Пиши только о том, что реально "
+    "видно. Красные флаги: просьба оплатить вне Goofish (перевод на WeChat/Alipay/карту, 加微信 для оплаты, "
+    "私下交易), отказ от 担保交易 (гарантии платформы), слова 高仿, 复刻, A货, 1:1, 原单, 同款, отказ показать "
+    "бирки, слишком низкая цена. Всегда советуй платить только внутри Goofish. Не помогай обманывать продавца. "
+    "Ты не можешь писать продавцу сам — ответ отправляет человек. Пиши по-русски коротко и по делу, "
+    "без воды; китайский — только в полях reply_cn и seller_said_cn.\n"
+    "Ответ строго JSON:\n"
+    "{\"kind\": \"chat\" | \"item_photos\" | \"question\" | \"other\", "
+    "\"seller_said\": \"перевод того, что написал продавец (если на скрине/в тексте есть его слова), иначе пусто\", "
+    "\"meaning\": \"что это значит и на что обратить внимание, 1-3 предложения\", "
+    "\"reply_cn\": \"готовый ответ продавцу на китайском или пусто, если отвечать не нужно\", "
+    "\"reply_ru\": \"перевод reply_cn на русский\", "
+    "\"tips\": [\"совет\", ...до 3], "
+    "\"ask_photos\": [\"какое фото попросить\", ...до 4], "
+    "\"red_flags\": [\"тревожный признак\", ...до 3], "
+    "\"legit\": null или {\"verdict\": \"likely_real\" | \"unclear\" | \"likely_fake\", "
+    "\"score\": 0-100, \"change\": \"better\" | \"worse\" | \"same\" | \"first\", "
+    "\"why\": \"1-2 предложения с номерами фото\"} — заполняй legit только если на фото видна сама вещь, "
+    "её бирки или детали}"
+)
+
+_INTENTS = {
+    "alt": "Дай ДРУГОЙ вариант ответа продавцу на тот же последний вопрос — другими словами и другим тоном.",
+    "bargain": "Помоги поторговаться: предложи реалистичную цену со скидкой и напиши вежливый ответ на "
+               "китайском с этим предложением. Объясни, почему именно такая цена.",
+    "photos": "Скажи, какие конкретно фото попросить у продавца для проверки подлинности этой вещи, "
+              "и напиши просьбу на китайском одним сообщением.",
+    "verdict": "Подведи итог по риску подделки по всему, что уже известно (фото, переписка, продавец, цена). "
+               "Заполни legit. Если данных мало — так и скажи и перечисли, чего не хватает.",
+}
+
+
+async def assistant(
+    context: str,
+    history: list[dict],
+    text: str | None = None,
+    images: list[bytes] | None = None,
+    intent: str | None = None,
+) -> dict | None:
+    """
+    Один шаг помощника. history — прошлые реплики [{"role": "user"|"assistant", "content": str}].
+    Возвращает словарь (см. _ASSISTANT_PROMPT) или None, если ИИ недоступен.
+    """
+    if not enabled():
+        return None
+    messages: list[dict] = [{"role": "system", "content": _ASSISTANT_PROMPT}]
+    if context:
+        messages.append({"role": "system", "content": "Что известно о вещи и сделке:\n" + context[:3000]})
+    for turn in history[-8:]:
+        if turn.get("role") in ("user", "assistant") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": str(turn["content"])[:1500]})
+    content: list[dict] = []
+    parts = []
+    if intent in _INTENTS:
+        parts.append(_INTENTS[intent])
+    if text:
+        parts.append(f"Сообщение пользователя: {text[:2000]}")
+    if images:
+        parts.append(f"Прислано изображений: {len(images[:6])} (нумеруй их по порядку: фото 1, фото 2…).")
+    content.append({"type": "text", "text": "\n".join(parts) or "Помоги с перепиской."})
+    for raw in (images or [])[:6]:
+        b64 = base64.b64encode(raw).decode()
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}})
+    messages.append({"role": "user", "content": content})
+    answer = await _chat(config.AI_ASSISTANT_MODEL, messages, max_tokens=1100)
+    data = _parse_json(answer)
+    if not isinstance(data, dict):
+        return None
+    for key in ("tips", "ask_photos", "red_flags"):
+        value = data.get(key)
+        data[key] = [str(x) for x in value if x][:4] if isinstance(value, list) else []
+    for key in ("kind", "seller_said", "meaning", "reply_cn", "reply_ru"):
+        data[key] = str(data.get(key) or "").strip()
+    legit = data.get("legit")
+    if isinstance(legit, dict) and legit.get("verdict") in ("likely_real", "unclear", "likely_fake"):
+        try:
+            legit["score"] = max(0, min(100, int(legit.get("score", 50))))
+        except (TypeError, ValueError):
+            legit["score"] = 50
+        legit["why"] = str(legit.get("why") or "")
+        legit["change"] = legit.get("change") if legit.get("change") in ("better", "worse", "same", "first") else "same"
+        data["legit"] = legit
+    else:
+        data["legit"] = None
+    return data

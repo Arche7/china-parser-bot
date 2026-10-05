@@ -21,7 +21,7 @@ import plans
 import rates
 import services
 from handlers.brands_ui import limit_problem, merge_old_variants
-from handlers.common import count_own, run_background, user_plan
+from handlers.common import count_own, feed_since, run_background, user_plan
 from handlers.plans_ui import _description, _title, own_addon_link, seats_left
 from sources.goofish import DETAIL_VERSION
 
@@ -29,7 +29,6 @@ log = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
 AUTH_MAX_AGE = 86400
-FEED_DAYS = config.FEED_DAYS
 FREE_PATHS = {("GET", "/api/me"), ("GET", "/api/plans"), ("POST", "/api/invoice"), ("POST", "/api/trial")}
 
 DB = web.AppKey("db", object)
@@ -178,6 +177,20 @@ def card(source: str, item_id: str, keyword: str, data: dict, fav: bool = False,
 # Эндпоинты
 # ----------------------------------------------------------------------
 
+_bot_name: str | None = None
+
+
+async def _bot_username(request: web.Request) -> str | None:
+    """Ник бота — приложение по нему открывает ИИ-помощника в чате (t.me/<ник>?start=ai)."""
+    global _bot_name
+    if _bot_name is None:
+        try:
+            _bot_name = (await request.app[BOT].me()).username
+        except Exception:
+            return None
+    return _bot_name
+
+
 async def api_me(request: web.Request) -> web.Response:
     db, uid = request.app[DB], request["uid"]
     user = await db.get_user(uid)
@@ -186,6 +199,8 @@ async def api_me(request: web.Request) -> web.Response:
     since = _now() - 86400
     settings = await db.get_settings(uid)
     until = user["sub_until"] if user and user["sub_until"] else None
+    feed_from = _now() - plan.feed_days * 86400
+    mode, every = monitor_mod.notify_mode(plan, settings)
     return web.json_response({
         "user": {"id": uid, "first_name": request["first_name"]},
         "admin": request["admin"],
@@ -199,15 +214,21 @@ async def api_me(request: web.Request) -> web.Response:
             "legit_checks": plan.legit_checks, "price_checks": plan.price_checks,
             "legit_left": await services.quota_left(db, uid, "legit"),
             "price_left": await services.quota_left(db, uid, "price"),
+            # чем ещё отличается тариф — приложение показывает замки и подсказки
+            "instant": plan.instant, "digest_min": plan.digest_min, "all_photos": plan.all_photos,
+            "feed_days": plan.feed_days, "assistant": plan.assistant,
+            "assistant_left": await services.quota_left(db, uid, "assistant"),
         },
         "counts": {
             "brands": len(await db.list_watches(uid)),
             "today": await db.count_sent_since(uid, since),
-            "feed_new": await db.feed_count(uid, since=_now() - FEED_DAYS * 86400, view="new"),
-            "feed_total": await db.feed_count(uid, since=_now() - FEED_DAYS * 86400),
+            "feed_new": await db.feed_count(uid, since=feed_from, view="new"),
+            "feed_total": await db.feed_count(uid, since=feed_from),
         },
-        "feed_days": FEED_DAYS,
-        "settings": {k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
+        "feed_days": plan.feed_days,
+        "settings": {**{k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
+                     "notify": mode, "every": every},
+        "bot": await _bot_username(request),
         "paused": bool(user and user["paused"]),
         "rate": rates.cny_rub(),
     })
@@ -224,7 +245,8 @@ async def api_feed(request: web.Request) -> web.Response:
         limit = min(60, max(1, int(q.get("limit", 30))))
     except ValueError:
         raise ApiError(400, "bad_paging")
-    since = _now() - FEED_DAYS * 86400
+    plan = await user_plan(db, uid)
+    since = _now() - plan.feed_days * 86400
     rows = await db.feed_page(uid, brand=brand, grp=grp, since=since, limit=limit, offset=offset, view=view)
     total = await db.feed_count(uid, brand=brand, grp=grp, since=since, view=view)
     facets = await db.feed_facets(uid, since, view=view)
@@ -235,7 +257,7 @@ async def api_feed(request: web.Request) -> web.Response:
         "view": view,
         "new_total": total if view == "new" else await db.feed_count(uid, since=since, view="new"),
         "all_total": total if view == "all" and not brand and not grp else await db.feed_count(uid, since=since),
-        "feed_days": FEED_DAYS,
+        "feed_days": plan.feed_days,
         "facets": {
             "brands": [{"key": k, "title": brands.display_name(k), "count": n} for k, n in facets["brands"].items()],
             "groups": [{"name": g, "count": n} for g, n in facets["groups"].items()],
@@ -258,7 +280,7 @@ async def api_seen(request: web.Request) -> web.Response:
             if isinstance(it, dict) and it.get("source") and it.get("item_id"):
                 pairs.append((str(it["source"])[:20], str(it["item_id"])[:40]))
         await db.mark_feed_seen(uid, pairs)
-    new_total = await db.feed_count(uid, since=_now() - FEED_DAYS * 86400, view="new")
+    new_total = await db.feed_count(uid, since=await feed_since(db, uid), view="new")
     return web.json_response({"ok": True, "new_total": new_total})
 
 
@@ -274,7 +296,7 @@ async def api_hide(request: web.Request) -> web.Response:
         raise ApiError(400, "bad_hidden")
     if not await db.set_feed_hidden(uid, source, item_id, hidden):
         raise ApiError(404, "not_found")
-    new_total = await db.feed_count(uid, since=_now() - FEED_DAYS * 86400, view="new")
+    new_total = await db.feed_count(uid, since=await feed_since(db, uid), view="new")
     return web.json_response({"ok": True, "new_total": new_total})
 
 
@@ -427,6 +449,8 @@ async def api_photos(request: web.Request) -> web.Response:
     found = await db.get_listing(source, item_id)
     if not found:
         raise ApiError(404, "not_found")
+    if not (await user_plan(db, request["uid"])).all_photos:
+        raise ApiError(403, "plan_photos")   # «Все фото» — с PRO
     keyword, data = found
     detail = await services.enrich(db, request.app[SOURCES], keyword, source, item_id, data)
     keyword, data = await db.get_listing(source, item_id)
@@ -445,7 +469,8 @@ async def api_plans(request: web.Request) -> web.Response:
                       "price_stars": p.price_stars, "quarter_stars": plans.quarter_stars(p),
                       "seats": p.seats, "seats_left": await seats_left(db, p, uid)})
     return web.json_response({"current": current, "payments_enabled": config.PAYMENTS_ENABLED,
-                              "star_rub": config.STAR_RUB_BUY, "plans": items})
+                              "star_rub": config.STAR_RUB_BUY, "plans": items,
+                              "compare": plans.comparison_rows()})
 
 
 async def api_invoice(request: web.Request) -> web.Response:
@@ -510,14 +535,19 @@ EVERY = {15, 30, 60, 180}
 async def api_settings(request: web.Request) -> web.Response:
     db, uid = request.app[DB], request["uid"]
     body = await _body(request)
+    plan = await user_plan(db, uid)
     changes = {}
     if "notify" in body:
         if body["notify"] not in NOTIFY:
             raise ApiError(400, "bad_notify")
+        if body["notify"] == "instant" and not plan.instant:
+            raise ApiError(403, "plan_instant")   # «Сразу» — в PRO и ELITE
         changes["notify"] = body["notify"]
     if "every" in body:
         if body["every"] not in EVERY:
             raise ApiError(400, "bad_every")
+        if body["every"] < plan.digest_min:
+            raise ApiError(403, "plan_every")
         changes["every"] = body["every"]
     if "delivery" in body:
         v = body["delivery"]
@@ -540,8 +570,10 @@ async def api_settings(request: web.Request) -> web.Response:
     settings = await db.update_settings(uid, **changes) if changes else await db.get_settings(uid)
     request.app[MONITOR].forget_settings(uid)
     user = await db.get_user(uid)
+    mode, every = monitor_mod.notify_mode(plan, settings)
     return web.json_response({"ok": True,
-                              "settings": {k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
+                              "settings": {**{k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
+                                           "notify": mode, "every": every},
                               "paused": bool(user and user["paused"])})
 
 

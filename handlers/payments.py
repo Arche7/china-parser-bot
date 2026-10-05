@@ -11,7 +11,7 @@
                         у ботов, которые продают за звёзды.
   /refund <id> <charge_id> — админ: вернуть звёзды и закрыть доступ.
   /payments            — админ: последние оплаты.
-  /export              — админ: все оплаты CSV-файлом (для Excel-таблицы).
+  /export              — только владелец (OWNER_ID): все оплаты CSV-файлом (для Excel-таблицы).
 """
 
 import html
@@ -312,8 +312,11 @@ async def cmd_refund(message: Message, command: CommandObject, bot: Bot, db: Dat
 
 @router.message(Command("export"))
 async def cmd_export(message: Message, db: Database) -> None:
-    """Админ: все оплаты файлом — для таблицы «HUNTR-финансы» (лист «Доходы», колонки A–G)."""
-    if not is_admin(message.from_user.id):
+    """
+    Только владелец: все оплаты файлом — для таблицы «HUNTR-финансы» (лист «Доходы», колонки A–G).
+    Другие админы (если появятся) и пользователи эту команду не видят: бот просто молчит.
+    """
+    if not config.OWNER_ID or message.from_user.id != config.OWNER_ID:
         return
     rows = await db.all_payments()
     if not rows:

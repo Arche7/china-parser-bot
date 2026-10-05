@@ -156,5 +156,5 @@ async def cb_legit(callback: CallbackQuery, db: Database, sources: dict) -> None
         text = "⚠️ <b>Похоже, вещь уже продана или снята с продажи.</b>\n\n" + text
     if r["cached"]:
         text += "\n<i>Это объявление уже проверяли — показываю результат, лимит не тратится.</i>"
-    await wait.edit_text(text[:4000], reply_markup=kb([btn("💬 Как спросить продавца по-китайски",
-                                                            f"l:ph:{source}:{item_id}")]))
+    await wait.edit_text(text[:4000], reply_markup=kb([btn("💬 Спросить продавца (фото, бирки, чек)",
+                                                            f"as:l:{source}:{item_id}")]))

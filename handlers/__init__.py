@@ -9,6 +9,7 @@
   settings_ui.py — настройки
   plans_ui.py   — тарифы, кнопки оплаты звёздами, «пригласи друга»
   payments.py   — приём оплаты звёздами, возвраты, /paysupport, /terms
+  assistant.py  — 🤖 ИИ-помощник по переписке с продавцом (ELITE)
   admin.py      — команды админа
 """
 
@@ -21,13 +22,14 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 import config
 import texts
 from db import Database
-from handlers import admin, brands_ui, feed_ui, home, listing, payments, plans_ui, settings_ui, start
+from handlers import admin, assistant, brands_ui, feed_ui, home, listing, payments, plans_ui, settings_ui, start
 from handlers.common import OLD_HOME, btn, kb, trial_days_text
 
 # Что можно делать БЕЗ подписки: познакомиться, посмотреть тарифы, включить пробный период
 PUBLIC_COMMANDS = {"/start", "/help", "/id", "/menu", "/paysupport", "/support", "/terms"}
 PUBLIC_TEXT = set(OLD_HOME)
-PUBLIC_CALLBACKS = ("ob:", "noop", "trial", "pl:", "h:home", "h:help")
+# as:open — рассказ про ИИ-помощника (продаёт ELITE); сам помощник проверяет доступ внутри
+PUBLIC_CALLBACKS = ("ob:", "noop", "trial", "pl:", "h:home", "h:help", "as:open")
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -94,7 +96,8 @@ def setup(db: Database) -> Router:
     root.message.outer_middleware(middleware)
     root.callback_query.outer_middleware(middleware)
     # Порядок важен: админ раньше всех, запасной обработчик — последним
-    for r in (admin.router, payments.router, start.router, home.router, feed_ui.router, brands_ui.router, listing.router,
+    # assistant — сразу после start: пока помощник открыт, он забирает текст и фото себе
+    for r in (admin.router, payments.router, start.router, assistant.router, home.router, feed_ui.router, brands_ui.router, listing.router,
               settings_ui.router, plans_ui.router, fallback):
         root.include_router(r)
     return root

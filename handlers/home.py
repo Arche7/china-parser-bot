@@ -17,7 +17,7 @@ from handlers.common import (
     OLD_HOME, REPLY_KB, back_home, brand_limits_text, btn, count_own, esc, human_date,
     is_admin, kb, now, plural, safe_answer, show, user_plan, webapp_button,
 )
-from monitor import watch_interval
+from monitor import notify_mode, watch_interval
 
 router = Router(name="home")
 BANNER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "home.jpg")
@@ -30,7 +30,7 @@ async def home_screen(db: Database, user_id: int, first_name: str | None = None)
     watches = await db.list_watches(user_id)
     has_access = await db.has_access(user_id)
     settings = await db.get_settings(user_id)
-    since = now() - config.FEED_DAYS * 86400
+    since = now() - plan.feed_days * 86400
     new_count = await db.feed_count(user_id, since=since, view="new")
     feed_total = await db.feed_count(user_id, since=since)
     favs = len(await db.list_favorites(user_id, limit=500))
@@ -55,12 +55,12 @@ async def home_screen(db: Database, user_id: int, first_name: str | None = None)
     else:
         lines.append("🎯 Брендов пока нет — добавь первый, и радар начнёт искать")
     lines.append(f"🆕 {new_count} {plural(new_count, 'новая', 'новые', 'новых')} · всего в ленте {feed_total} "
-                 f"за {config.FEED_DAYS} {plural(config.FEED_DAYS, 'день', 'дня', 'дней')}")
-    mode = settings.get("notify", "digest")
+                 f"за {plan.feed_days} {plural(plan.feed_days, 'день', 'дня', 'дней')}")
+    mode, every = notify_mode(plan, settings)
     if paused:
         lines.append("⏸ Пауза — ничего не присылаю")
     elif mode == "digest":
-        lines.append(f"🔔 Сводка раз в {settings.get('every', 30)} мин")
+        lines.append(f"🔔 Сводка раз в {every} мин")
     elif mode == "instant":
         lines.append("🔔 Каждая находка сразу")
     else:
@@ -76,6 +76,7 @@ async def home_screen(db: Database, user_id: int, first_name: str | None = None)
     rows += [
         [btn(feed_label, "fd:v:all:-:0")],
         [btn("🎯 Бренды", "b:list"), btn(f"⭐ Избранное · {favs}" if favs else "⭐ Избранное", "f:list")],
+        [btn("🤖 ИИ-помощник · переписка с продавцом" + ("" if plan.assistant else " · ELITE"), "as:open")],
         [btn("🔔 Уведомления", "nt:open"), btn("⚙️ Настройки", "st:open")],
         [btn("💎 Тариф", "pl:open"), btn("❓ Помощь", "h:help")],
     ]
