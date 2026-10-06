@@ -23,8 +23,9 @@ from brands_cn import chinese_name
 from db import Database
 from handlers.common import (
     OLD_BRANDS, back_home, is_admin, brand_limits_text, btn, count_own, esc, kb, price_text,
-    run_background, safe_answer, show, url_btn, user_plan,
+    run_background, safe_answer, show, trial_days_text, trial_eligible, url_btn, user_plan,
 )
+from handlers.trial import autostart_trial, started_message as trial_started_message
 from monitor import Monitor, watch_interval
 
 router = Router(name="brands")
@@ -125,17 +126,33 @@ async def limit_keyboard(db: Database | None = None, user_id: int | None = None,
 
 # ---------------------------------------------------------------- каталог
 
-async def catalog_screen(db: Database, user_id: int, page: int):
+async def catalog_screen(db: Database, user_id: int, page: int, group: int | None = None):
+    """
+    Каталог: сверху вкладки групп («Все», «Люкс-дома», …), ниже — бренды
+    выбранной группы по PAGE штук на странице.
+    group — номер группы в brands.catalog_groups() или None = «Все».
+    Кнопки: b:add:<страница> — все бренды, b:add:<страница>:<группа> — одна группа.
+    """
     plan = await user_plan(db, user_id)
     watches = await db.list_watches(user_id)
     mine = {brands.canonical(w["keyword"]) for w in watches}
-    keys = list(brands.BRANDS)
+    groups = brands.catalog_groups()
+    if group is not None and 0 <= group < len(groups):
+        keys = groups[group][1]
+    else:
+        group, keys = None, list(brands.BRANDS)
+    tail = "" if group is None else f":{group}"  # чтобы листание оставалось в той же группе
     pages = max(1, (len(keys) + PAGE - 1) // PAGE)
     page = max(0, min(page, pages - 1))
     chunk = keys[page * PAGE:(page + 1) * PAGE]
 
     # «Готовый набор» — личный набор админа, остальные собирают свои бренды сами
-    rows = [[btn(f"⭐ Готовый набор · {len(brands.PRESET)} брендов", "b:preset")]] if page == 0 and is_admin(user_id) else []
+    rows = [[btn(f"⭐ Готовый набор · {len(brands.PRESET)} брендов", "b:preset")]] if page == 0 and group is None and is_admin(user_id) else []
+    # Вкладки групп по 2 в ряд; выбранная — с точкой
+    tabs = [btn(f"{'● ' if group is None else ''}Все · {len(brands.BRANDS)}", "b:add:0")]
+    tabs += [btn(f"{'● ' if i == group else ''}{name} · {len(group_keys)}", f"b:add:0:{i}")
+             for i, (name, group_keys) in enumerate(groups)]
+    rows += [tabs[i:i + 2] for i in range(0, len(tabs), 2)]
     for i in range(0, len(chunk), 2):
         row = []
         for key in chunk[i:i + 2]:
@@ -145,10 +162,10 @@ async def catalog_screen(db: Database, user_id: int, page: int):
     if pages > 1:
         nav = []
         if page > 0:
-            nav.append(btn("‹", f"b:add:{page - 1}"))
+            nav.append(btn("‹", f"b:add:{page - 1}{tail}"))
         nav.append(btn(f"{page + 1}/{pages}", "noop"))
         if page < pages - 1:
-            nav.append(btn("›", f"b:add:{page + 1}"))
+            nav.append(btn("›", f"b:add:{page + 1}{tail}"))
         rows.append(nav)
     rows.append([btn("✍️ Свой бренд", "b:own")])
     rows.append([btn("‹ Главная", "h:home"), btn("🎯 Мои бренды", "b:list")])
@@ -157,9 +174,14 @@ async def catalog_screen(db: Database, user_id: int, page: int):
     text = (
         "➕ <b>Какой бренд ищем?</b>\n\n"
         "Для брендов из каталога я знаю все написания — латиницей, по-китайски и сленгом "
-        "(например, LV = 路易威登 = 驴牌), так находится больше объявлений.\n\n"
+        "(например, LV = 路易威登 = 驴牌), так находится больше объявлений.\n"
+        "Бренды разложены по группам — переключай вкладками ниже.\n\n"
         f"<i>Занято: {brand_limits_text(plan, len(watches), own)}</i>"
     )
+    if await trial_eligible(db, user_id):
+        # Человек ещё без доступа: честно говорим, что выбор бренда включит бесплатный тест
+        text += (f"\n\n🎁 Первый бренд включит <b>тест-драйв на {trial_days_text()}</b> — "
+                 "бесплатно, без карты, закончится сам.")
     return text, kb(*rows)
 
 
@@ -180,8 +202,11 @@ async def cmd_add(message: Message, command: CommandObject, db: Database, monito
 @router.callback_query(F.data.startswith("b:add:"))
 async def cb_catalog(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
     await state.clear()
-    page = int(callback.data.split(":")[2] or 0)
-    text, markup = await catalog_screen(db, callback.from_user.id, page)
+    # b:add:<страница> или b:add:<страница>:<группа>
+    parts = callback.data.split(":")
+    page = int(parts[2] or 0)
+    group = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+    text, markup = await catalog_screen(db, callback.from_user.id, page, group)
     await show(callback, text, markup)
     await safe_answer(callback)
 
@@ -293,6 +318,10 @@ async def finish_add(event, db: Database, monitor: Monitor, user_id: int, keywor
     if problem:
         await show(event, "🔒 " + problem, await limit_keyboard(db, user_id, keyword))
         return
+    # Тест-драйв включается сам на первом бренде (если человек его ещё не пробовал).
+    # Лимиты выше уже проверены по тестовому тарифу. Уже использованный тест не включится:
+    # autostart_trial вернёт None, а без доступа сюда не пустит AccessMiddleware.
+    trial_until = await autostart_trial(db, user_id)
     removed = await merge_old_variants(db, user_id, keyword) if brands.is_catalog(keyword) else []
     is_new = await db.add_watch(user_id, keyword, low, high)
     plan = await user_plan(db, user_id)
@@ -310,6 +339,11 @@ async def finish_add(event, db: Database, monitor: Monitor, user_id: int, keywor
     await show(event, "\n".join(lines),
                kb([btn("➕ Ещё бренд", "b:add:0"), btn("🎯 Мои бренды", "b:list")], back_home()))
     run_background(monitor.preview_new_keyword(user_id, keyword, show=True))
+    if trial_until:
+        # Отдельным сообщением: «тест включён до …» и что будет дальше
+        text, markup = trial_started_message(trial_until, brand=brands.display_name(keyword))
+        msg = event.message if isinstance(event, CallbackQuery) else event
+        await msg.answer(text, reply_markup=markup)
 
     # Для своих брендов подскажем китайское название
     cn = chinese_name(keyword) if not brands.is_catalog(keyword) else None

@@ -21,7 +21,8 @@ import plans
 import rates
 import services
 from handlers.brands_ui import limit_problem, merge_old_variants
-from handlers.common import count_own, feed_since, run_background, user_plan
+from handlers.common import count_own, feed_since, run_background, trial_eligible, user_plan
+from handlers.trial import autostart_trial, start_trial
 from handlers.plans_ui import _description, _title, own_addon_link, seats_left
 from sources.goofish import DETAIL_VERSION
 
@@ -30,6 +31,9 @@ log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
 AUTH_MAX_AGE = 86400
 FREE_PATHS = {("GET", "/api/me"), ("GET", "/api/plans"), ("POST", "/api/invoice"), ("POST", "/api/trial")}
+# Тест-драйв: кто ещё не пробовал, может открыть каталог и сохранить первый бренд —
+# тест включится сам в api_brand_add (лимиты при этом — тестовые, см. common.user_plan)
+TRIAL_PATHS = {("GET", "/api/brands"), ("POST", "/api/brands")}
 
 DB = web.AppKey("db", object)
 BOT = web.AppKey("bot", object)
@@ -77,14 +81,18 @@ async def api_middleware(request: web.Request, handler):
         user = parsed.user
         db = request.app[DB]
         await db.upsert_user(user.id, user.username, user.first_name)
+        # Учёт «кто заходил сегодня» для /report (канал — мини-приложение)
+        await db.touch_activity(user.id, "app")
         request["uid"] = user.id
         request["first_name"] = user.first_name
         request["admin"] = user.id in config.ADMIN_IDS
         request["access"] = await db.has_access(user.id)
         route = request.match_info.route
-        free = (request.method, getattr(route.resource, "canonical", request.path)) in FREE_PATHS
+        path_key = (request.method, getattr(route.resource, "canonical", request.path))
+        free = path_key in FREE_PATHS
         if not request["access"] and not free:
-            return _err(403, "no_access")
+            if not (path_key in TRIAL_PATHS and await trial_eligible(db, user.id)):
+                return _err(403, "no_access")
         return await handler(request)
     except ApiError as e:
         return _err(e.status, e.error)
@@ -201,12 +209,16 @@ async def api_me(request: web.Request) -> web.Response:
     until = user["sub_until"] if user and user["sub_until"] else None
     feed_from = _now() - plan.feed_days * 86400
     mode, every = monitor_mod.notify_mode(plan, settings)
+    # Тест-драйв идёт: приложение показывает плашку с отсчётом и кнопкой «Выбрать тариф»
+    on_trial = bool(access and not request["admin"] and plan.code == "trial")
     return web.json_response({
         "user": {"id": uid, "first_name": request["first_name"]},
         "admin": request["admin"],
         "access": access,
         "trial_available": bool(config.TRIAL_DAYS > 0 and not (user and user["trial_used"]) and not access),
         "trial_days": config.TRIAL_DAYS,
+        "on_trial": on_trial,
+        "trial_until": until if on_trial else None,
         "plan": {
             "code": plan.code, "title": plan.title,
             "until": None if request["admin"] else until,
@@ -229,6 +241,7 @@ async def api_me(request: web.Request) -> web.Response:
         "settings": {**{k: settings.get(k) for k in ("notify", "every", "delivery", "fee", "quiet")},
                      "notify": mode, "every": every},
         "bot": await _bot_username(request),
+        "ref_days": config.REFERRAL_BONUS_DAYS,   # «Пригласи друга — +N дней» в профиле
         "avito": config.AVITO_ENABLED,   # выключено — приложение не обещает сравнение с Авито
         "paused": bool(user and user["paused"]),
         "rate": rates.cny_rub(),
@@ -334,7 +347,10 @@ async def api_brands(request: web.Request) -> web.Response:
     tracked = {brands.canonical(w["keyword"]) for w in watches}
     return web.json_response({
         "items": [_watch_json(w, request["admin"], plan.code) for w in watches],
-        "catalog": [{"key": k, "title": v["title"], "tracked": k in tracked} for k, v in brands.BRANDS.items()],
+        # group — вкладка в приложении («Люкс-дома», «Стритвир», …)
+        "catalog": [{"key": k, "title": v["title"], "group": v.get("group") or "", "tracked": k in tracked}
+                    for k, v in brands.BRANDS.items()],
+        "groups": [name for name, _ in brands.catalog_groups()],  # порядок вкладок
         "limits": {"brands": plan.brands, "own_brands": plan.own_brands,
                    "used": len(watches), "own_used": await count_own(db, uid),
                    # реальный интервал проверки брендов из каталога (с учётом нижней границы сервера)
@@ -363,11 +379,13 @@ async def api_brand_add(request: web.Request) -> web.Response:
     problem = await limit_problem(db, uid, key)
     if problem:
         raise ApiError(400, _strip_tags(problem))
+    # Первый бренд без доступа — включаем тест-драйв сами (только если тест ещё не был)
+    trial_until = await autostart_trial(db, uid)
     if brands.is_catalog(key):
         await merge_old_variants(db, uid, key)
     is_new = await db.add_watch(uid, key, low, high)
     run_background(request.app[MONITOR].preview_new_keyword(uid, key, show=True))
-    return web.json_response({"ok": True, "is_new": is_new})
+    return web.json_response({"ok": True, "is_new": is_new, "trial_until": trial_until})
 
 
 async def _watch_or_404(request: web.Request):
@@ -523,7 +541,8 @@ async def api_trial(request: web.Request) -> web.Response:
     db, uid = request.app[DB], request["uid"]
     if config.TRIAL_DAYS <= 0:
         raise ApiError(400, "trial_off")
-    until = await db.start_trial(uid, config.TRIAL_DAYS)
+    # Общая функция с ботом: запоминает начало теста — от него считаются напоминания
+    until = await start_trial(db, uid)
     if until is None:
         raise ApiError(409, "trial_used")
     return web.json_response({"ok": True, "until": until})
@@ -584,22 +603,21 @@ async def index(request: web.Request) -> web.Response:
 
 # ----------------------------------------------------------------------
 # 🤖 ИИ-помощник по переписке с продавцом (ELITE) — та же логика, что в боте
-# (ai.assistant + лимит «assistant»), но история хранится в базе, по разговорам:
-# отдельно про каждую вещь ("goofish:123") и общий ("general").
+# (ai.assistant + лимит «assistant»). История — в базе, по разговорам: отдельно про
+# каждую вещь ("goofish:123") и общий ("general"). Эти разговоры ОБЩИЕ с ботом:
+# имена разговоров и пересказ истории для ИИ берём из handlers/assistant.py.
 # ----------------------------------------------------------------------
 
 ASSISTANT_MAX_PHOTOS = 6
 ASSISTANT_MAX_PHOTO_BYTES = 8 * 1024 * 1024
-_INTENT_LABELS = {"alt": "Другой вариант ответа", "bargain": "Помоги поторговаться",
-                  "photos": "Какие фото попросить?", "verdict": "Итог по риску"}
 
 
 def _thread(source: str | None, item_id: str | None) -> str:
-    if source and item_id:
-        if not re.fullmatch(r"[a-z0-9_]{1,20}", source) or not re.fullmatch(r"[0-9A-Za-z_-]{1,40}", item_id):
-            raise ApiError(400, "bad_item")
-        return f"{source}:{item_id}"
-    return "general"
+    from handlers.assistant import thread_of
+    try:
+        return thread_of(source, item_id)
+    except ValueError:
+        raise ApiError(400, "bad_item")
 
 
 async def _assistant_access(request: web.Request):
@@ -637,7 +655,7 @@ async def api_assistant_post(request: web.Request) -> web.Response:
     Новое сообщение помощнику. multipart/form-data: text, intent, source, item_id и до 6 файлов photo.
     Каждый ответ ИИ — минус одно сообщение из лимита (несколько фото за раз — тоже одно).
     """
-    from handlers.assistant import history_entry, listing_context
+    from handlers.assistant import INTENT_LABELS, history_from_msgs, listing_context
     db, uid = request.app[DB], request["uid"]
     plan, allowed = await _assistant_access(request)
     if not allowed:
@@ -673,7 +691,7 @@ async def api_assistant_post(request: web.Request) -> web.Response:
     except Exception:
         raise ApiError(400, "bad_form")
     text = (fields.get("text") or "").strip() or None
-    intent = fields.get("intent") if fields.get("intent") in _INTENT_LABELS else None
+    intent = fields.get("intent") if fields.get("intent") in INTENT_LABELS else None
     if not text and not images and not intent:
         raise ApiError(400, "empty")
     thread = _thread(fields.get("source") or None, fields.get("item_id") or None)
@@ -684,23 +702,42 @@ async def api_assistant_post(request: web.Request) -> web.Response:
     if thread != "general":
         found = await listing_context(db, *thread.split(":", 1))
         context = found[1] if found else ""
-    history = []
-    for m in (await db.list_assistant_msgs(uid, thread, limit=10)):
-        if m["role"] == "user":
-            bits = [_INTENT_LABELS.get(m.get("intent") or "", ""), m.get("text") or "",
-                    f"[прислал фото: {m['photos']}]" if m.get("photos") else ""]
-            history.append({"role": "user", "content": " ".join(b for b in bits if b) or "(сообщение)"})
-        elif isinstance(m.get("reply"), dict):
-            history.append({"role": "assistant", "content": history_entry(m["reply"])})
+    # Та же функция, что в боте: история разговора одинаково понятна ИИ в обоих окнах
+    history = history_from_msgs(await db.list_assistant_msgs(uid, thread, limit=10))
 
     reply = await ai.assistant(context, history, text=text, images=images or None, intent=intent)
     if not reply:
         raise ApiError(502, "ai_failed")   # лимит не тратим
     await db.add_usage(uid, "assistant")
-    user_msg = {"text": text, "photos": len(images), "intent": intent}
+    # "via": "app" — бот в пересказе покажет, что это было в приложении
+    user_msg = {"text": text, "photos": len(images), "intent": intent, "via": "app"}
     await db.add_assistant_msg(uid, thread, "user", user_msg)
-    await db.add_assistant_msg(uid, thread, "assistant", {"reply": reply})
+    await db.add_assistant_msg(uid, thread, "assistant", {"reply": reply, "via": "app"})
+    # Последний разговор — в настройки: кнопки под ответами в боте продолжат именно его
+    await db.update_settings(uid, assistant_thread=thread)
     return web.json_response({"reply": reply, "left": await services.quota_left(db, uid, "assistant")})
+
+
+async def api_assistant_threads(request: web.Request) -> web.Response:
+    """«Мои разговоры»: все разговоры с помощником — начатые и в боте, и в приложении."""
+    from handlers.assistant import GENERAL, msg_preview, thread_about, thread_parts
+    db, uid = request.app[DB], request["uid"]
+    _, allowed = await _assistant_access(request)
+    if not allowed:
+        return web.json_response({"threads": []})
+    threads = []
+    for t in await db.list_assistant_threads(uid):
+        source, item_id = thread_parts(t["thread"])
+        if t["thread"] != GENERAL and not source:
+            continue   # битое имя разговора — не показываем
+        last = t["last"]
+        threads.append({
+            "thread": t["thread"], "source": source, "item_id": item_id,
+            "about": "Общий разговор" if not source else (await thread_about(db, t["thread"]) or f"Вещь {item_id}"),
+            "last_text": msg_preview(last), "last_role": last.get("role"), "last_via": last.get("via", "app"),
+            "last_at": t["last_at"], "count": t["count"],
+        })
+    return web.json_response({"threads": threads})
 
 
 async def api_assistant_clear(request: web.Request) -> web.Response:
@@ -738,5 +775,6 @@ def create_app(db, bot, monitor, avito, sources: dict) -> web.Application:
     r.add_get("/api/assistant", api_assistant_get)
     r.add_post("/api/assistant", api_assistant_post)
     r.add_post("/api/assistant/clear", api_assistant_clear)
+    r.add_get("/api/assistant/threads", api_assistant_threads)
     r.add_static("/static", STATIC)
     return app

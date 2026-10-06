@@ -14,18 +14,23 @@
   avito_cache — цены с Авито, чтобы не платить за один и тот же запрос
   feed       — лента: что нашлось для каждого пользователя (сводки и просмотр по разделам)
   payments   — оплаты звёздами (нужны для возвратов и отмены старой подписки)
+  activity   — кто и когда заходил (бот / приложение) по дням — для отчёта /report
 
 Старая база (от прошлой версии бота) обновляется сама при запуске:
 новые столбцы и таблицы добавляются, старые данные не трогаются.
 """
 
 import json
+import logging
 import time
-from datetime import datetime
+from datetime import date, datetime, time as dtime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiosqlite
 
 import config
+
+log = logging.getLogger("db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -137,8 +142,9 @@ CREATE INDEX IF NOT EXISTS idx_sent_time ON sent (sent_at);
 CREATE INDEX IF NOT EXISTS idx_seen_time ON seen (first_seen);
 CREATE INDEX IF NOT EXISTS idx_listings_time ON listings (created_at);
 
--- ИИ-помощник по переписке в приложении (ELITE): история разговоров.
+-- ИИ-помощник по переписке (ELITE): история разговоров, общая для бота и приложения.
 -- thread — "goofish:123" (разговор про конкретную вещь) или "general".
+-- В data есть "via": "bot" / "app" — откуда пришло сообщение.
 CREATE TABLE IF NOT EXISTS assistant_msgs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -148,6 +154,20 @@ CREATE TABLE IF NOT EXISTS assistant_msgs (
     created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assistant_thread ON assistant_msgs (user_id, thread, id);
+
+-- Активность для отчёта /report: одна строка на человека, день и канал.
+-- day — дата по Москве ('2026-10-06'), channel — 'bot' (чат) или 'app' (мини-приложение).
+-- Строка не растёт от каждого нажатия: увеличивается только счётчик events.
+CREATE TABLE IF NOT EXISTS activity (
+    user_id     INTEGER NOT NULL,
+    day         TEXT NOT NULL,
+    channel     TEXT NOT NULL,
+    events      INTEGER NOT NULL DEFAULT 0,
+    first_at    INTEGER NOT NULL,             -- первое действие за день (unix-время)
+    last_at     INTEGER NOT NULL,             -- последнее действие за день
+    PRIMARY KEY (user_id, day, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_activity_day ON activity (day);
 """
 
 # Новые столбцы в старых таблицах: (таблица, столбец, описание)
@@ -163,6 +183,9 @@ MIGRATIONS = [
     ("feed", "seen", "INTEGER NOT NULL DEFAULT 0"),           # 1 = уже посмотрел (в чате или приложении)
     ("feed", "hidden", "INTEGER NOT NULL DEFAULT 0"),         # 1 = скрыл «неинтересно»
     ("payments", "slot", "TEXT"),                             # слот «+1 свой бренд», за который платёж
+    ("users", "last_seen", "INTEGER"),                        # когда последний раз что-то нажимал (бот или приложение)
+    ("users", "trial_at", "INTEGER"),                         # когда включил пробный период (для /report)
+    ("users", "source", "TEXT"),                              # откуда пришёл: tt / ig / tg / vk / yt / src_… (ссылка ?start=…)
 ]
 
 # Настройки пользователя по умолчанию
@@ -183,6 +206,37 @@ def _now() -> int:
 
 def _period() -> str:
     return datetime.now().strftime("%Y-%m")
+
+
+# Границы дня для отчёта считаем по Москве: «сегодня» для владельца — это
+# московские сутки, а сервер на Railway живёт по UTC (там «сутки» сдвинуты на 3 часа).
+try:
+    MSK = ZoneInfo("Europe/Moscow")
+except ZoneInfoNotFoundError:
+    # Если в системе нет базы часовых поясов (пакет tzdata не поставился) —
+    # Москва с 2014 года живёт в UTC+3 без перехода на летнее время.
+    MSK = timezone(timedelta(hours=3), "MSK")
+
+
+def msk_today() -> date:
+    """Сегодняшняя дата по Москве."""
+    return datetime.now(MSK).date()
+
+
+def msk_day(ts: int | None = None) -> str:
+    """Дата по Москве строкой '2026-10-06' (так она лежит в таблице activity)."""
+    return datetime.fromtimestamp(ts if ts is not None else _now(), MSK).strftime("%Y-%m-%d")
+
+
+def day_bounds(first: date, last: date | None = None) -> tuple[int, int]:
+    """
+    Unix-время начала дня first и конца дня last (не включая) по Москве.
+    Нужно, чтобы искать по created_at в users и payments «за этот день».
+    """
+    last = last or first
+    start = datetime.combine(first, dtime(0, 0), MSK)
+    end = datetime.combine(last + timedelta(days=1), dtime(0, 0), MSK)
+    return int(start.timestamp()), int(end.timestamp())
 
 
 class Database:
@@ -289,9 +343,10 @@ class Database:
         if not user or user["trial_used"] or user["sub_until"] > _now():
             return None
         until = _now() + days * 86400
+        # trial_at — когда включил пробный: по нему /report считает «пробных за день» и конверсию
         await self.conn.execute(
-            "UPDATE users SET sub_until = ?, plan = 'trial', trial_used = 1 WHERE user_id = ?",
-            (until, user_id),
+            "UPDATE users SET sub_until = ?, plan = 'trial', trial_used = 1, trial_at = ? WHERE user_id = ?",
+            (until, _now(), user_id),
         )
         await self.conn.commit()
         return until
@@ -627,7 +682,7 @@ class Database:
 
     # ---------------- Лимиты тарифа ----------------
 
-    # ---------------- ИИ-помощник (история в приложении) ----------------
+    # ---------------- ИИ-помощник (общая история бота и приложения) ----------------
 
     async def add_assistant_msg(self, user_id: int, thread: str, role: str, data: dict) -> int:
         cur = await self.conn.execute(
@@ -647,6 +702,31 @@ class Database:
         rows = list(await cur.fetchall())
         return [{"id": r["id"], "role": r["role"], "at": r["created_at"], **json.loads(r["data"])}
                 for r in reversed(rows)]
+
+    async def count_assistant_msgs(self, user_id: int, thread: str) -> int:
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) FROM assistant_msgs WHERE user_id = ? AND thread = ?", (user_id, thread)
+        )
+        return (await cur.fetchone())[0]
+
+    async def list_assistant_threads(self, user_id: int, limit: int = 30) -> list[dict]:
+        """
+        Разговоры пользователя (и из бота, и из приложения), свежие сверху:
+        [{"thread", "count", "last_at", "last": последнее сообщение}].
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT a.thread, a.role, a.data, a.created_at, t.cnt
+            FROM assistant_msgs a
+            JOIN (SELECT thread, MAX(id) AS last_id, COUNT(*) AS cnt
+                  FROM assistant_msgs WHERE user_id = ? GROUP BY thread) t ON a.id = t.last_id
+            ORDER BY a.id DESC LIMIT ?
+            """,
+            (user_id, limit),
+        )
+        return [{"thread": r["thread"], "count": r["cnt"], "last_at": r["created_at"],
+                 "last": {"role": r["role"], **json.loads(r["data"])}}
+                for r in await cur.fetchall()]
 
     async def clear_assistant(self, user_id: int, thread: str) -> None:
         await self.conn.execute("DELETE FROM assistant_msgs WHERE user_id = ? AND thread = ?", (user_id, thread))
@@ -974,3 +1054,291 @@ class Database:
             (border,),
         )
         await self.conn.commit()
+
+    # ---------------- Отчётность (/report) ----------------
+    # Всё ниже нужно только владельцу: учёт заходов и запросы для отчёта.
+    # Дни считаем по Москве (см. msk_day / day_bounds вверху файла).
+    # Админов в цифрах не считаем — иначе свои тесты раздувают статистику.
+    # Исключение — деньги: оплаты считаем все (как /stats и /payments),
+    # кроме возвращённых.
+
+    @staticmethod
+    def _no_admins(column: str) -> tuple[str, list]:
+        """Кусок SQL «column не админ» и его параметры."""
+        if not config.ADMIN_IDS:
+            return "1 = 1", []
+        placeholders = ",".join("?" for _ in config.ADMIN_IDS)
+        return f"{column} NOT IN ({placeholders})", list(config.ADMIN_IDS)
+
+    async def touch_activity(self, user_id: int, channel: str) -> None:
+        """
+        Отметить, что человек сегодня что-то делал в боте (channel='bot')
+        или в приложении ('app'). Вызывается на КАЖДОЕ нажатие/запрос,
+        поэтому это один дешёвый UPSERT: новая строка появляется раз в день,
+        дальше только растёт счётчик. Ошибка здесь не должна ломать бота —
+        статистика не важнее того, чтобы человек получил ответ.
+        """
+        now = _now()
+        try:
+            await self.conn.execute(
+                """
+                INSERT INTO activity (user_id, day, channel, events, first_at, last_at)
+                VALUES (?, ?, ?, 1, ?, ?)
+                ON CONFLICT(user_id, day, channel) DO UPDATE SET
+                    events = events + 1, last_at = excluded.last_at
+                """,
+                (user_id, msk_day(now), channel, now, now),
+            )
+            await self.conn.execute("UPDATE users SET last_seen = ? WHERE user_id = ?", (now, user_id))
+            await self.conn.commit()
+        except Exception:
+            log.exception("touch_activity %s %s", user_id, channel)
+
+    async def report_activity(self, first: date, last: date) -> dict:
+        """
+        Уникальные активные люди за дни first..last: всего, только бот,
+        только приложение, и там и там. Один человек считается один раз,
+        даже если заходил каждый день.
+        """
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"""
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(b > 0 AND a = 0), 0) AS bot_only,
+                   COALESCE(SUM(a > 0 AND b = 0), 0) AS app_only,
+                   COALESCE(SUM(a > 0 AND b > 0), 0) AS both_ch
+            FROM (
+                SELECT user_id,
+                       SUM(channel = 'bot') AS b,
+                       SUM(channel = 'app') AS a
+                FROM activity
+                WHERE day BETWEEN ? AND ? AND {no_adm}
+                GROUP BY user_id
+            )
+            """,
+            (first.isoformat(), last.isoformat(), *args),
+        )
+        r = await cur.fetchone()
+        return {"total": r["total"], "bot_only": r["bot_only"], "app_only": r["app_only"],
+                "both": r["both_ch"], "bot": r["bot_only"] + r["both_ch"], "app": r["app_only"] + r["both_ch"]}
+
+    async def report_dau(self, first: date, last: date) -> dict[str, int]:
+        """Сколько разных людей заходило в каждый из дней ('2026-10-06' -> 12). Пустые дни = 0."""
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT day, COUNT(DISTINCT user_id) FROM activity "
+            f"WHERE day BETWEEN ? AND ? AND {no_adm} GROUP BY day",
+            (first.isoformat(), last.isoformat(), *args),
+        )
+        found = {row[0]: row[1] for row in await cur.fetchall()}
+        result, d = {}, first
+        while d <= last:
+            result[d.isoformat()] = found.get(d.isoformat(), 0)
+            d += timedelta(days=1)
+        return result
+
+    async def report_new_users(self, first: date, last: date) -> int:
+        """Сколько новых людей впервые нажали /start (users.created_at) за эти дни."""
+        start, end = day_bounds(first, last)
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT COUNT(*) FROM users WHERE created_at >= ? AND created_at < ? AND {no_adm}",
+            (start, end, *args),
+        )
+        return (await cur.fetchone())[0]
+
+    async def set_source(self, user_id: int, source: str) -> None:
+        """
+        Запоминает, откуда человек пришёл (ссылка t.me/<бот>?start=tt и т.п.).
+        Пишем только ПЕРВЫЙ источник: если человек потом перейдёт по другой
+        ссылке, «первое касание» не перезатрётся — так честнее считать соцсети.
+        """
+        await self.conn.execute(
+            "UPDATE users SET source = ? WHERE user_id = ? AND (source IS NULL OR source = '')",
+            (source, user_id),
+        )
+        await self.conn.commit()
+
+    async def report_sources(self, first: date, last: date) -> list[tuple[str, int]]:
+        """Новые люди за эти дни по источникам: [('tt', 5), ('ig', 3), ('—', 10)]."""
+        start, end = day_bounds(first, last)
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT COALESCE(NULLIF(source, ''), '—') AS src, COUNT(*) AS n FROM users "
+            f"WHERE created_at >= ? AND created_at < ? AND {no_adm} GROUP BY src ORDER BY n DESC",
+            (start, end, *args),
+        )
+        return [(r[0], r[1]) for r in await cur.fetchall()]
+
+    async def report_trials_started(self, first: date, last: date) -> int:
+        """
+        Сколько человек включили пробный период за эти дни.
+        Время включения (trial_at) пишется только с версии с отчётами —
+        пробные, включённые раньше, здесь не видны.
+        """
+        start, end = day_bounds(first, last)
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT COUNT(*) FROM users WHERE trial_at >= ? AND trial_at < ? AND {no_adm}",
+            (start, end, *args),
+        )
+        return (await cur.fetchone())[0]
+
+    async def report_trials_ending(self, hours: int = 24) -> list[aiosqlite.Row]:
+        """У кого пробный период кончится в ближайшие N часов (им можно написать и предложить тариф)."""
+        now = _now()
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT user_id, username, first_name, sub_until FROM users "
+            f"WHERE plan = 'trial' AND sub_until > ? AND sub_until <= ? AND {no_adm} "
+            f"ORDER BY sub_until",
+            (now, now + hours * 3600, *args),
+        )
+        return list(await cur.fetchall())
+
+    async def report_payments(self, first: date, last: date) -> dict:
+        """
+        Оплаты за дни first..last (без возвращённых): сколько, сколько звёзд,
+        по тарифам, и сколько из них первые оплаты человека, а сколько — повторные
+        (продление подписки, смена тарифа, докупка бренда).
+        «Первая» = у этого человека нет более ранней невозвращённой оплаты.
+        """
+        start, end = day_bounds(first, last)
+        cur = await self.conn.execute(
+            """
+            SELECT p.plan, p.stars, p.months, p.created_at, p.user_id,
+                   u.username, u.first_name,
+                   EXISTS(
+                       SELECT 1 FROM payments q
+                       WHERE q.user_id = p.user_id AND q.refunded = 0
+                         AND (q.created_at < p.created_at
+                              OR (q.created_at = p.created_at AND q.rowid < p.rowid))
+                   ) AS repeat
+            FROM payments p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            WHERE p.refunded = 0 AND p.created_at >= ? AND p.created_at < ?
+            ORDER BY p.created_at DESC
+            """,
+            (start, end),
+        )
+        # people — кто именно заплатил (свежие сверху), чтобы в /report было видно имена
+        result = {"count": 0, "stars": 0, "first": 0, "repeat": 0, "by_plan": {}, "people": []}
+        for r in await cur.fetchall():
+            result["people"].append(r)
+            result["count"] += 1
+            result["stars"] += r["stars"]
+            result["repeat" if r["repeat"] else "first"] += 1
+            count, stars = result["by_plan"].get(r["plan"], (0, 0))
+            result["by_plan"][r["plan"]] = (count + 1, stars + r["stars"])
+        return result
+
+    async def report_active_subs(self) -> dict[str, int]:
+        """Сколько людей с доступом прямо сейчас, по тарифам ('pro' -> 5). Пробный — тоже тут."""
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT COALESCE(plan, 'pro') AS plan, COUNT(*) FROM users "
+            f"WHERE sub_until > ? AND {no_adm} GROUP BY 1 ORDER BY 2 DESC",
+            (_now(), *args),
+        )
+        return {row[0]: row[1] for row in await cur.fetchall()}
+
+    async def report_expiring(self, days: int = 3) -> list[aiosqlite.Row]:
+        """
+        Платные подписки, которые кончаются в ближайшие N дней.
+        auto = 1 — у человека есть подписка с автопродлением: Telegram, скорее
+        всего, сам спишет звёзды, писать ему не обязательно.
+        """
+        now = _now()
+        no_adm, args = self._no_admins("u.user_id")
+        cur = await self.conn.execute(
+            f"""
+            SELECT u.user_id, u.username, u.first_name, u.plan, u.sub_until,
+                   EXISTS(SELECT 1 FROM payments p WHERE p.user_id = u.user_id
+                          AND p.recurring = 1 AND p.refunded = 0 AND p.plan != 'own') AS auto
+            FROM users u
+            WHERE COALESCE(u.plan, 'pro') != 'trial' AND u.sub_until > ? AND u.sub_until <= ? AND {no_adm}
+            ORDER BY u.sub_until
+            """,
+            (now, now + days * 86400, *args),
+        )
+        return list(await cur.fetchall())
+
+    async def report_conversion(self, days: int = 30) -> tuple[int, int]:
+        """
+        Конверсия пробный → оплата: (сколько включили пробный за N дней,
+        сколько из них потом хоть раз заплатили за тариф).
+        Для старых пользователей без trial_at берём дату регистрации —
+        обычно пробный включают в первый же день.
+        """
+        no_adm, args = self._no_admins("u.user_id")
+        cur = await self.conn.execute(
+            f"""
+            SELECT COUNT(*),
+                   COALESCE(SUM(EXISTS(SELECT 1 FROM payments p WHERE p.user_id = u.user_id
+                                       AND p.refunded = 0 AND p.plan != 'own')), 0)
+            FROM users u
+            WHERE u.trial_used = 1 AND COALESCE(u.trial_at, u.created_at) >= ? AND {no_adm}
+            """,
+            (_now() - days * 86400, *args),
+        )
+        row = await cur.fetchone()
+        return row[0], row[1]
+
+    async def report_usage(self, first: date, last: date) -> dict:
+        """
+        Расход ИИ-функций.
+        • За дни first..last — сообщения ИИ-помощнику и в боте, и в приложении:
+          история у них общая и хранится с временем (таблица assistant_msgs).
+          Сообщения бота до этого обновления не сохранялись — их здесь нет.
+        • Таблица usage считает по месяцам (period '2026-10'), поэтому легит-чеки,
+          сравнения цен и помощник (бот + приложение) — итогом за месяц дня last.
+        """
+        start, end = day_bounds(first, last)
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT COUNT(*), COUNT(DISTINCT user_id) FROM assistant_msgs "
+            f"WHERE role = 'user' AND created_at >= ? AND created_at < ? AND {no_adm}",
+            (start, end, *args),
+        )
+        msgs, people = await cur.fetchone()
+        cur = await self.conn.execute(
+            f"SELECT kind, SUM(count), COUNT(DISTINCT user_id) FROM usage "
+            f"WHERE period = ? AND {no_adm} GROUP BY kind",
+            (last.strftime("%Y-%m"), *args),
+        )
+        month = {row[0]: (row[1], row[2]) for row in await cur.fetchall()}
+        return {"app_msgs": msgs, "app_users": people, "month": month}
+
+    async def report_top_brands(self, limit: int = 10) -> list[tuple[str, int]]:
+        """Самые отслеживаемые бренды: (бренд, сколько человек его отслеживают)."""
+        no_adm, args = self._no_admins("user_id")
+        cur = await self.conn.execute(
+            f"SELECT keyword, COUNT(*) FROM watches WHERE {no_adm} "
+            f"GROUP BY keyword ORDER BY 2 DESC, keyword LIMIT ?",
+            (*args, limit),
+        )
+        return [(row[0], row[1]) for row in await cur.fetchall()]
+
+    async def report_active_users(self, day: date, limit: int = 50) -> list[aiosqlite.Row]:
+        """
+        Кто заходил в этот день: имя, тариф, был ли в боте / приложении,
+        время последнего действия. Свежие сверху. is_new = 1 — пришёл в этот же день.
+        """
+        start, end = day_bounds(day)
+        no_adm, args = self._no_admins("a.user_id")
+        cur = await self.conn.execute(
+            f"""
+            SELECT a.user_id, u.username, u.first_name, u.plan, u.sub_until,
+                   MAX(a.channel = 'bot') AS bot, MAX(a.channel = 'app') AS app,
+                   MAX(a.last_at) AS last_at, SUM(a.events) AS events,
+                   (u.created_at >= ? AND u.created_at < ?) AS is_new
+            FROM activity a
+            LEFT JOIN users u ON u.user_id = a.user_id
+            WHERE a.day = ? AND {no_adm}
+            GROUP BY a.user_id
+            ORDER BY last_at DESC
+            LIMIT ?
+            """,
+            (start, end, day.isoformat(), *args, limit),
+        )
+        return list(await cur.fetchall())

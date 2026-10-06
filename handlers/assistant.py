@@ -21,20 +21,32 @@
   * Каждый ответ ИИ — минус одно сообщение из лимита тарифа (ELITE — 300 в месяц).
     Несколько фото одним альбомом — это одно сообщение.
 
-Состояние разговора хранится в памяти бота (FSM). После перезапуска бота
-разговор начинается заново — это нормально.
+Одна переписка — два окна (бот и приложение HUNTR):
+  * История хранится в базе (таблица assistant_msgs), по разговорам («thread»):
+    "general" — общий разговор, "goofish:<id>" — разговор про конкретную вещь.
+    И бот, и приложение читают и пишут ОДНИ И ТЕ ЖЕ разговоры — поэтому начал
+    в боте, продолжил в приложении (и наоборот), и ИИ помнит контекст.
+  * В памяти бота (FSM) лежит только «в каком разговоре мы сейчас»:
+    {"thread": ..., "about": ...}. Последний разговор ещё и сохраняется
+    в настройках пользователя (assistant_thread) — после перезапуска бота
+    кнопки под старым ответом продолжают тот же разговор, а не пустой.
+  * Общие помощники для бота и webapp/server.py: thread_of / thread_parts
+    (имя разговора), history_from_msgs (история для ИИ), msg_preview (превью).
+  * Фото в базе НЕ храним — только их количество («📷 2 фото»).
 """
 
 import asyncio
 import html
 import io
 import logging
+import re
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, Message, WebAppInfo
 
 import ai
 import brands
@@ -45,7 +57,7 @@ import rates
 import services
 from db import Database
 from decoder import decode
-from handlers.common import back_home, btn, esc, kb, safe_answer, show, upsell_kb, user_plan
+from handlers.common import back_home, btn, esc, kb, plural, safe_answer, show, upsell_kb, user_plan
 
 log = logging.getLogger(__name__)
 router = Router(name="assistant")
@@ -156,6 +168,95 @@ def history_entry(r: dict) -> str:
 
 
 # ----------------------------------------------------------------------
+# Общее для бота и приложения: разговоры (thread) и история из базы.
+# webapp/server.py импортирует эти функции — так бот и приложение гарантированно
+# называют разговоры одинаково и одинаково пересказывают историю ИИ.
+# ----------------------------------------------------------------------
+
+GENERAL = "general"
+# Что разрешаем в имени разговора: защищает базу и ссылки от мусора
+_SOURCE_RE = re.compile(r"[a-z0-9_]{1,20}")
+_ITEM_RE = re.compile(r"[0-9A-Za-z_-]{1,40}")
+
+# Как кнопки-просьбы выглядят в истории (и для ИИ, и в приложении)
+INTENT_LABELS = {"alt": "Другой вариант ответа", "bargain": "Помоги поторговаться",
+                 "photos": "Какие фото попросить?", "verdict": "Итог по риску"}
+
+
+def thread_of(source: str | None, item_id: str | None) -> str:
+    """
+    Имя разговора: "goofish:123" — про конкретную вещь, "general" — общий.
+    Если площадка или id странные — ValueError (приложение ответит 400, бот откроет общий).
+    """
+    if source and item_id:
+        if not _SOURCE_RE.fullmatch(source) or not _ITEM_RE.fullmatch(item_id):
+            raise ValueError("bad_item")
+        return f"{source}:{item_id}"
+    return GENERAL
+
+
+def thread_parts(thread: str | None) -> tuple[str | None, str | None]:
+    """Обратно: "goofish:123" -> ("goofish", "123"); общий или битый разговор -> (None, None)."""
+    if not thread or thread == GENERAL or ":" not in thread:
+        return None, None
+    source, item_id = thread.split(":", 1)
+    try:
+        thread_of(source, item_id)
+    except ValueError:
+        return None, None
+    return source, item_id
+
+
+def history_from_msgs(msgs: list[dict]) -> list[dict]:
+    """
+    Сообщения из базы -> короткая история для ИИ (как в чате: user / assistant).
+    Одна и та же функция в боте и приложении — иначе ИИ «помнил» бы разговор по-разному.
+    """
+    history = []
+    for m in msgs:
+        if m.get("role") == "user":
+            bits = [INTENT_LABELS.get(m.get("intent") or "", ""), m.get("text") or "",
+                    f"[прислал фото: {m['photos']}]" if m.get("photos") else ""]
+            history.append({"role": "user", "content": " ".join(b for b in bits if b) or "(сообщение)"})
+        elif isinstance(m.get("reply"), dict):
+            history.append({"role": "assistant", "content": history_entry(m["reply"])})
+    return history
+
+
+def _short(text: str, n: int = 80) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def msg_preview(m: dict, n: int = 80) -> str:
+    """Одна строка про сообщение — для списка разговоров в приложении и пересказа в боте."""
+    if m.get("role") == "user":
+        if m.get("text"):
+            return _short(m["text"], n)
+        if m.get("intent"):
+            return INTENT_LABELS.get(m["intent"], "")
+        return f"📷 {m['photos']} фото" if m.get("photos") else "(сообщение)"
+    r = m.get("reply") if isinstance(m.get("reply"), dict) else {}
+    return _short(r.get("reply_cn") or r.get("seller_said") or r.get("meaning") or "Ответ помощника", n)
+
+
+def _about(keyword: str, data: dict) -> str:
+    """Короткое название вещи для заголовка: «Бренд — что это»."""
+    brand = brands.display_name(keyword)
+    what = data.get("title_ru") or decode(data.get("title") or "").summary() or ""
+    return f"{brand} — {what}"[:60] if what else brand
+
+
+async def thread_about(db: Database, thread: str) -> str | None:
+    """Название разговора без тяжёлого контекста для ИИ (для списка «Мои разговоры»)."""
+    source, item_id = thread_parts(thread)
+    if not source:
+        return None
+    found = await db.get_listing(source, item_id)
+    return _about(*found) if found else None
+
+
+# ----------------------------------------------------------------------
 # Контекст сделки (если помощника открыли из объявления)
 # ----------------------------------------------------------------------
 
@@ -167,8 +268,7 @@ async def listing_context(db: Database, source: str, item_id: str) -> tuple[str,
     keyword, data = found
     brand = brands.display_name(keyword)
     d = decode(data.get("title") or "")
-    what = data.get("title_ru") or d.summary() or ""
-    about = f"{brand} — {what}"[:60] if what else brand
+    about = _about(keyword, data)
     lines = [f"Бренд: {brand}", f"Объявление на Goofish: {data.get('title', '')[:300]}"]
     if data.get("title_ru"):
         lines.append(f"Перевод заголовка: {data['title_ru']}")
@@ -215,18 +315,70 @@ async def open_assistant(target: Message | CallbackQuery, db: Database, state: F
         msg = target.message if isinstance(target, CallbackQuery) else target
         await msg.answer(text)
         return
-    about, context = None, ""
-    if source and item_id:
-        found = await listing_context(db, source, item_id)
-        if found:
-            about, context = found
-    await state.set_state(Assistant.chat)
-    await state.set_data({"about": about, "context": context, "history": [], "last": None})
-    left = await services.quota_left(db, user_id, "assistant")
-    text = HELLO.format(about=f" · {esc(about)}" if about else "", left=left)
-    markup = kb([btn("✖ Закончить", "as:x")])
+    try:
+        thread = thread_of(source, item_id)
+    except ValueError:
+        thread = GENERAL   # битая ссылка — не падаем, открываем общий разговор
+    await enter_thread(state, db, user_id, thread)
+    data = await state.get_data()
     msg = target.message if isinstance(target, CallbackQuery) else target
+    text, markup = await _welcome(db, user_id, thread, data.get("about"))
     await msg.answer(text, reply_markup=markup)
+
+
+async def enter_thread(state: FSMContext, db: Database, user_id: int, thread: str) -> None:
+    """
+    Включаем режим помощника в нужном разговоре. В FSM — только имя разговора и
+    заголовок; сама история живёт в базе. Имя разговора запоминаем и в настройках,
+    чтобы после перезапуска бота продолжить именно его.
+    """
+    about = await thread_about(db, thread)
+    await state.set_state(Assistant.chat)
+    await state.set_data({"thread": thread, "about": about})
+    await db.update_settings(user_id, assistant_thread=thread)
+
+
+def _app_thread_url(thread: str) -> str:
+    """Ссылка на приложение, которая сразу откроет этот разговор: .../app?ai=goofish%3A123."""
+    parts = urlsplit(config.WEBAPP_URL)
+    query = (parts.query + "&" if parts.query else "") + "ai=" + quote(thread, safe="")
+    return urlunsplit(parts._replace(query=query))
+
+
+async def _welcome(db: Database, user_id: int, thread: str, about: str | None):
+    """Приветствие: пустой разговор — подсказка; уже есть сообщения — «Продолжаем разговор»."""
+    left = await services.quota_left(db, user_id, "assistant")
+    msgs = await db.list_assistant_msgs(user_id, thread, limit=4)
+    if not msgs:
+        text = HELLO.format(about=f" · {esc(about)}" if about else "", left=left)
+        return text, kb([btn("✖ Закончить", "as:x")])
+    count = await db.count_assistant_msgs(user_id, thread)
+    lines = ["🤖 <b>ИИ-помощник</b>" + (f" · {esc(about)}" if about else ""),
+             f"\n🔄 <b>Продолжаем разговор</b> — в нём {count} {plural(count, 'сообщение', 'сообщения', 'сообщений')}. "
+             "Он общий для бота и приложения HUNTR."]
+    # Последние 1–2 обмена: начинаем с вопроса пользователя, чтобы пары не разрывались
+    while msgs and msgs[0].get("role") != "user":
+        msgs = msgs[1:]
+    for m in msgs:
+        via = " <i>(из приложения)</i>" if m.get("via", "app") == "app" else ""
+        if m.get("role") == "user":
+            lines.append(f"\n👤 <b>Ты:</b> {esc(msg_preview(m, 70))}{via}")
+            continue
+        r = m.get("reply") if isinstance(m.get("reply"), dict) else {}
+        if r.get("seller_said"):
+            lines.append(f"📩 Продавец: «{esc(_short(r['seller_said'], 70))}»")
+        if r.get("reply_cn"):
+            lines.append(f"✍️ Ответ: <code>{esc(_short(r['reply_cn'], 70))}</code>")
+        if not r.get("seller_said") and not r.get("reply_cn"):
+            lines.append(f"🤖 {esc(msg_preview(m, 70))}")
+    lines.append("\nПрисылай скрин, фото или вопрос — продолжу с того же места.")
+    lines.append(f"<i>Осталось сообщений в этом месяце: {left}.</i>")
+    rows = []
+    if config.WEBAPP_URL:
+        rows.append([InlineKeyboardButton(text="📱 Вся переписка в приложении",
+                                          web_app=WebAppInfo(url=_app_thread_url(thread)))])
+    rows.append([btn("🧹 Начать заново", "as:clr"), btn("✖ Закончить", "as:x")])
+    return "\n".join(lines)[:4000], kb(*rows)
 
 
 @router.callback_query(F.data == "as:open")
@@ -269,6 +421,38 @@ async def cb_close(callback: CallbackQuery, state: FSMContext) -> None:
                                   reply_markup=kb(back_home()))
 
 
+async def _current_thread(state: FSMContext, db: Database, user_id: int) -> str:
+    """В каком разговоре мы сейчас: из FSM, а если бот перезапускался — из настроек."""
+    if await state.get_state() == Assistant.chat.state:
+        thread = (await state.get_data()).get("thread")
+        if thread:
+            return thread
+    thread = (await db.get_settings(user_id)).get("assistant_thread") or GENERAL
+    # Проверяем: в настройки могло попасть что угодно — открываем только корректный разговор
+    return thread if thread == GENERAL or thread_parts(thread)[0] else GENERAL
+
+
+@router.callback_query(F.data == "as:clr")
+async def cb_clear(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    """«🧹 Начать заново»: стираем историю этого разговора (в боте и в приложении сразу)."""
+    user_id = callback.from_user.id
+    plan = await user_plan(db, user_id)
+    if not plan.assistant:
+        await safe_answer(callback)
+        await show(callback, PITCH, upsell_kb(plans.next_plan_with("assistant")))
+        return
+    thread = await _current_thread(state, db, user_id)
+    await db.clear_assistant(user_id, thread)
+    await enter_thread(state, db, user_id, thread)
+    await safe_answer(callback, "Начали заново")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    text, markup = await _welcome(db, user_id, thread, (await state.get_data()).get("about"))
+    await callback.message.answer(text, reply_markup=markup)
+
+
 # ----------------------------------------------------------------------
 # Разговор
 # ----------------------------------------------------------------------
@@ -308,43 +492,53 @@ async def reply_step(message: Message, db: Database, state: FSMContext, user_id:
                              "Лимит обновится 1-го числа. Если нужно больше — напиши в поддержку.")
         return
     data = await state.get_data()
+    thread = data.get("thread") or GENERAL
+    about = data.get("about")
     wait = await message.answer("🤖 Читаю и думаю… обычно 10–30 секунд.")
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
     except Exception:
         pass
-    r = await ai.assistant(data.get("context") or "", data.get("history") or [],
-                           text=text, images=images, intent=intent)
+    # Контекст вещи и историю каждый раз берём из базы: там же их видит и дополняет приложение
+    context = ""
+    source, item_id = thread_parts(thread)
+    if source:
+        found = await listing_context(db, source, item_id)
+        if found:
+            about, context = about or found[0], found[1]
+    history = history_from_msgs(await db.list_assistant_msgs(user_id, thread, limit=10))
+    r = await ai.assistant(context, history, text=text, images=images, intent=intent)
     if not r:
+        # ИИ не ответил — лимит не тратим и в историю ничего не пишем
         await wait.edit_text("Не получилось — ИИ не ответил. Попробуй ещё раз через минуту, лимит не потрачен.")
         return
     await db.add_usage(user_id, "assistant")
+    # Сохраняем обмен в общую историю. Фото не храним — только сколько их было.
+    # "via": "bot" — приложение покажет у таких сообщений пометку «из бота».
+    await db.add_assistant_msg(user_id, thread, "user",
+                               {"text": text, "photos": len(images or []),
+                                "intent": intent if intent in INTENT_LABELS else None, "via": "bot"})
+    await db.add_assistant_msg(user_id, thread, "assistant", {"reply": r, "via": "bot"})
     left = await services.quota_left(db, user_id, "assistant")
-    history = list(data.get("history") or [])
-    asked = {"alt": "(попросил другой вариант)", "bargain": "(попросил помочь поторговаться)",
-             "photos": "(спросил, какие фото попросить)", "verdict": "(попросил итог по риску)"}.get(intent or "", "")
-    user_turn = " ".join(x for x in [asked, text or "", f"[прислал фото: {len(images)}]" if images else ""] if x)
-    history += [{"role": "user", "content": user_turn or "(сообщение)"},
-                {"role": "assistant", "content": history_entry(r)}]
-    await state.update_data(history=history[-10:], last=user_turn)
     try:
-        await wait.edit_text(answer_text(r, data.get("about"), left), reply_markup=answer_kb())
+        await wait.edit_text(answer_text(r, about, left), reply_markup=answer_kb())
     except Exception:
-        await message.answer(answer_text(r, data.get("about"), left), reply_markup=answer_kb())
+        await message.answer(answer_text(r, about, left), reply_markup=answer_kb())
 
 
 @router.callback_query(F.data.startswith("as:i:"))
 async def cb_intent(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
     intent = callback.data.split(":", 2)[2]
     if await state.get_state() != Assistant.chat.state:
-        # Бот перезапускался или помощника закрыли — откроем заново и выполним просьбу
+        # Бот перезапускался или помощника закрыли — открываем ПОСЛЕДНИЙ разговор
+        # (он записан в настройках), а не пустой, и выполняем просьбу
         plan = await user_plan(db, callback.from_user.id)
         if not plan.assistant:
             await safe_answer(callback)
             await show(callback, PITCH, upsell_kb(plans.next_plan_with("assistant")))
             return
-        await state.set_state(Assistant.chat)
-        await state.set_data({"about": None, "context": "", "history": [], "last": None})
+        thread = await _current_thread(state, db, callback.from_user.id)
+        await enter_thread(state, db, callback.from_user.id, thread)
     await safe_answer(callback, "Думаю…")
     await reply_step(callback.message, db, state, callback.from_user.id, intent=intent)
 

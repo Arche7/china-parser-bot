@@ -278,6 +278,16 @@ input{font-family:inherit}
 .risk.likely_real{background:rgba(120,220,120,.14);color:#9BE29B}.risk.unclear{background:rgba(255,200,80,.14);color:#FFD27A}.risk.likely_fake{background:rgba(255,100,100,.14);color:#FF9A9A}
 .ai-chips{display:flex;gap:6px;overflow-x:auto;margin:12px -18px 0;padding:0 18px}
 .ai-chips .chip{height:34px;font-size:12px}
+/* общая переписка бот ↔ приложение: пометка «из бота», ссылка в чат и «Мои разговоры» */
+.via{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--muted2);border:1px solid var(--line);border-radius:6px;padding:1px 5px;margin-bottom:4px}
+.ai-tg{display:inline-flex;align-items:center;gap:6px;margin-top:10px;height:34px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:800;color:var(--lime);border:1px solid rgba(212,255,58,.35);background:rgba(212,255,58,.06)}
+.thr-h{margin:16px 0 8px;font-size:12px;font-weight:800;color:var(--muted2);text-transform:uppercase;letter-spacing:.06em}
+.thr{display:flex;flex-direction:column;gap:6px}
+.thr button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border-radius:16px;padding:10px 12px}
+.thr button span{flex:1;min-width:0}
+.thr b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thr small{display:block;font-size:12px;color:var(--muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.thr i{font-style:normal;font-size:11px;font-weight:800;color:var(--muted2);flex:none}
 .composer{position:sticky;bottom:calc(-1 * (var(--bottom) + 28px));margin:10px -18px 0;padding:10px 18px calc(var(--bottom) + 16px);background:var(--sheet);border-top:1px solid var(--line)}
 .composer .row2{display:flex;gap:8px;align-items:flex-end}
 .composer textarea{flex:1;min-width:0;min-height:44px;max-height:120px;resize:none;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);padding:11px 13px;font:inherit;font-size:16px;outline:none}
@@ -304,6 +314,8 @@ input{font-family:inherit}
 .splash{position:absolute;inset:0;z-index:50;background:#050605;display:flex;flex-direction:column;align-items:center;justify-content:center}
 [hidden]{display:none!important}
 .sq{width:54px;height:54px;border-radius:18px;display:flex;align-items:center;justify-content:center;flex:none}
+/* липкая кнопка «Открыть на Goofish» внизу карточки вещи — главное действие всегда под пальцем */
+.ctabar{position:sticky;bottom:calc(-1 * (var(--bottom) + 28px));z-index:2;margin:16px -18px 0;padding:12px 18px calc(var(--bottom) + 16px);background:linear-gradient(rgba(14,16,14,0),var(--sheet) 28%)}
 .banner{margin-top:12px;padding:11px 14px;border-radius:14px;background:rgba(255,107,90,.10);border:1px solid rgba(255,107,90,.32);color:#FFB3A8;font-size:13px;font-weight:700;display:flex;gap:8px;align-items:center}
 .rng{position:relative;height:6px;border-radius:3px;background:rgba(255,255,255,.08);margin:16px 0 10px}
 .rng i{position:absolute;top:0;bottom:0;border-radius:3px;background:linear-gradient(90deg,rgba(212,255,58,.35),rgba(212,255,58,.75))}
@@ -321,6 +333,15 @@ input{font-family:inherit}
 .acc summary h3{margin:0}
 .acc summary>svg{transition:transform .25s;color:var(--muted);flex:none}
 .acc[open] summary>svg{transform:rotate(180deg)}
+/* тест-драйв: плашка с отсчётом в ленте, большая карточка на пейволе, подсветка PRO */
+.tbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 7px 7px 14px;border-radius:16px;background:rgba(212,255,58,.08);border:1px solid rgba(212,255,58,.32);font-size:13px;font-weight:700;color:var(--soft)}
+.tbar b{color:var(--lime);white-space:nowrap}
+.tbar .btn{height:36px;border-radius:12px;font-size:13px;padding:0 12px;flex:none}
+.tcta{border-radius:26px;padding:20px;background:linear-gradient(160deg,rgba(212,255,58,.20),rgba(212,255,58,.04));border-color:rgba(212,255,58,.45)}
+.tcta .k{font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--lime)}
+.tcta .h{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em;margin:6px 0 8px}
+.plan.rec{border-color:rgba(212,255,58,.55);box-shadow:0 10px 36px rgba(212,255,58,.08)}
+.sheet-wrap.over{z-index:40}
 </style>
 </head>
 <body>
@@ -362,7 +383,9 @@ const PHRASES = [
   ['可以发一下吊牌和水洗标的照片吗？', 'Можешь прислать фото бирки и тега с составом?'],
   ['可以拍一下细节吗？logo、拉链、走线和五金', 'Сними детали: логотип, молнию, швы и фурнитуру'],
   ['是正品吗？有购买凭证吗？', 'Это оригинал? Есть чек или подтверждение покупки?'],
-  ['最低多少可以出？诚心要', 'За сколько минимум отдашь? Готов взять']
+  ['能量一下尺寸吗？衣长、胸围、肩宽、袖长', 'Можешь замерить: длина, грудь, плечи, рукав?'],
+  ['最低多少可以出？诚心要', 'За сколько минимум отдашь? Готов взять'],
+  ['可以寄到我的转运仓吗？我发你地址', 'Отправишь на мой склад? Скину адрес']
 ];
 const TILES = ['radial-gradient(circle at 30% 25%,#3C4436,#121510 75%)', 'radial-gradient(circle at 30% 25%,#3A3A44,#111116 75%)',
   'radial-gradient(circle at 30% 25%,#2F3A44,#0F1418 75%)', 'radial-gradient(circle at 30% 25%,#3E3A30,#14120E 75%)',
@@ -407,6 +430,16 @@ const NF = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const num = n => NF.format(Math.round(Number(n) || 0));
 const plural = (n, a, b, c) => { const m = Math.abs(n) % 100, k = m % 10; return (m > 10 && m < 20) ? c : k === 1 ? a : (k > 1 && k < 5) ? b : c; };
 const dateRu = ts => new Date(ts * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+const dateTimeRu = ts => new Date(ts * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+// Сколько осталось тест-драйва: «1 д 5 ч», «5 ч 20 мин», «20 мин» — как в боте (handlers/trial.py)
+function leftText(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  if (d) return h ? `${d} д ${h} ч` : `${d} д`;
+  if (h) return m ? `${h} ч ${m} мин` : `${h} ч`;
+  return `${Math.max(m, 1)} мин`;
+}
+const trialDays = () => { const d = (S.me && S.me.trial_days) || 2; return `${d} ${plural(d, 'день', 'дня', 'дней')}`; };
 const key = it => it.source + ':' + it.item_id;
 const tileFor = s => TILES[Math.abs([...String(s)].reduce((a, c) => a * 31 + c.charCodeAt(0) | 0, 7)) % TILES.length];
 function priceText(lo, hi) {
@@ -540,21 +573,29 @@ function goTab(tab) {
 function skeletonCards(n) {
   return `<div class="flist">${Array.from({ length: n }, () => `<div class="card glass" aria-hidden="true"><div class="thumb skel"></div><div class="cbody"><div class="skel" style="height:14px;width:50%;border-radius:6px"></div><div class="skel" style="height:11px;width:80%;border-radius:6px;margin-top:9px"></div><div class="skel" style="height:16px;width:42%;border-radius:6px;margin-top:12px"></div></div></div>`).join('')}</div>`;
 }
+// Сколько дней хранит лента — зависит от тарифа (3 / 7 / 14), а не всегда «3 дня»
+const daysTxt = () => { const d = (S.me && S.me.feed_days) || 3; return d + ' ' + plural(d, 'день', 'дня', 'дней'); };
 const newCount = () => S.newTotal != null ? S.newTotal : ((S.me && S.me.counts && S.me.counts.feed_new) || 0);
 function fsumHTML() {
   const n = newCount();
-  return `<b>${num(n)}</b> ${plural(n, 'новая', 'новых', 'новых')}${S.allTotal != null ? ` · ${num(S.allTotal)} за 3 дня` : ''}`;
+  return `<b>${num(n)}</b> ${plural(n, 'новая', 'новых', 'новых')}${S.allTotal != null ? ` · ${num(S.allTotal)} за ${daysTxt()}` : ''}`;
 }
 function headHTML() {
   const me = S.me, on = !me.paused, all = S.view === 'all';
   return `<div class="between rise"><div class="logo">${LOGO(28)}<b>HUNTR</b></div>
     <div class="livepill glass"><span class="dot live${on ? '' : ' off'}"></span>${on ? 'Радар активен' : 'На паузе'}</div></div>
+    ${trialBar()}
     <div class="fsum rise" id="fsum" style="animation-delay:40ms">${fsumHTML()}</div>
     <div class="row rise" style="gap:8px;animation-delay:80ms">
       <div class="seg two" style="flex:1" role="radiogroup" aria-label="Что показывать"><div class="ind" style="transform:translateX(${all ? '100%' : '0'})"></div>
         <button class="press${all ? '' : ' on'}" role="radio" aria-checked="${!all}" data-act="view" data-v="new">Новые · <span id="newCnt">${num(newCount())}</span></button>
         <button class="press${all ? ' on' : ''}" role="radio" aria-checked="${all}" data-act="view" data-v="all">Все</button></div>
       <button class="vbtn glass press" data-act="mode" aria-label="${S.mode === 'grid' ? 'Показать списком' : 'Показать плиткой'}">${svg(S.mode === 'grid' ? ICON.list : ICON.feed, 20)}</button></div>`;
+}
+// Тест-драйв идёт — слим-плашка с отсчётом: конец теста не должен стать сюрпризом
+function trialBar() {
+  const me = S.me; if (!me || !me.on_trial || !me.trial_until) return '';
+  return `<div class="tbar rise" style="animation-delay:20ms" role="note"><span>🎁 Тест-драйв · осталось <b>${esc(leftText(me.trial_until - Date.now() / 1000))}</b></span><button class="btn sm lime press" data-act="toPlans">Выбрать тариф</button></div>`;
 }
 function renderHead() { const h = $('feedHead'); if (h) h.innerHTML = headHTML(); }
 function setNewTotal(n) {
@@ -576,14 +617,14 @@ function feedScreen() {
     </div>`;
     if (!f.items.length && S.feedLoading) body = skeletonCards(4);
     else if (!f.items.length) {
-      if (filtered) body = `<div class="empty glass rise"><b>Здесь пока пусто</b><div class="txt">По этому фильтру ${S.view === 'new' ? 'новых находок нет' : 'за 3 дня ничего не нашлось'}.</div><button class="btn sm ghost press" data-act="filter" data-kind="" data-val="">Показать все</button></div>`;
-      else if (S.view === 'new' && S.me.counts.brands) body = `<div class="empty glass rise"><div style="color:var(--lime)">${svg('M5 12l5 5 9-10', 36, 1.6)}</div><b>Всё просмотрено</b><div class="txt">Новые находки появятся здесь, как только радар их поймает.</div><button class="btn sm ghost press" data-act="view" data-v="all">Все за 3 дня</button></div>`;
+      if (filtered) body = `<div class="empty glass rise"><b>Здесь пока пусто</b><div class="txt">По этому фильтру ${S.view === 'new' ? 'новых находок нет' : `за ${daysTxt()} ничего не нашлось`}.</div><button class="btn sm ghost press" data-act="filter" data-kind="" data-val="">Показать все</button></div>`;
+      else if (S.view === 'new' && S.me.counts.brands) body = `<div class="empty glass rise"><div style="color:var(--lime)">${svg('M5 12l5 5 9-10', 36, 1.6)}</div><b>Всё просмотрено</b><div class="txt">Новые находки появятся здесь, как только радар их поймает.</div><button class="btn sm ghost press" data-act="view" data-v="all">Все за ${daysTxt()}</button></div>`;
       else body = `<div class="empty glass rise"><div style="color:var(--lime)">${svg(ICON.brands, 40, 1.4)}</div><b>Лента пока пустая</b><div class="txt">Добавь бренды — радар начнёт искать новые объявления на Goofish и складывать их сюда.</div><button class="btn lime press" data-act="tab" data-tab="brands" style="margin-top:6px">Выбрать бренды</button></div>`;
     } else {
       body = S.view === 'all' ? byDay(f.items) : itemsHTML(f.items, 0);
       const left = f.total - f.items.length;
       if (left > 0) body += `<button class="btn ghost press" data-act="more" id="moreBtn">Показать ещё · ${num(left)}</button>`;
-      if (S.view === 'all') tail = `<div class="foot" style="text-align:center;margin-top:0">Лента хранит находки за 3 дня. Важное — в ☆ Избранное.</div>`;
+      if (S.view === 'all') tail = `<div class="foot" style="text-align:center;margin-top:0">Лента хранит находки за ${daysTxt()}. Важное — в ☆ Избранное.</div>`;
     }
   } else body = skeletonCards(4);
   const showMark = S.view === 'new' && newCount() > 0 && f && f.items.length;
@@ -801,9 +842,10 @@ function itemHTML(k) {
     <div class="glass box" style="margin-top:16px" id="profitBox">${profitBox(k)}</div>
     <div class="glass box" style="margin-top:12px" id="legitBox">${legitBox(k)}</div>
     <button class="glass press aibtn" data-act="assistant" data-key="${esc(k)}">${svg(ICON.chat, 22)}<span><b>Переписка с продавцом · ИИ</b><small>Скрин чата → перевод, ответ на китайском, торг и риск по новым фото</small></span>${S.me && S.me.plan.assistant ? '' : '<span class="elite">ELITE</span>'}</button>
-    <div class="row" style="margin-top:16px;gap:8px">
+    <div class="row ctabar" style="gap:8px">
       <button class="btn lime press" style="flex:1;min-width:0;height:54px;font-size:15px" data-act="open" data-key="${esc(k)}">Открыть на Goofish ↗</button>
-      <button class="glass press sq" data-act="phrases" data-key="${esc(k)}" aria-label="Фразы продавцу на китайском" aria-expanded="${st.phrases}">${svg(ICON.chat)}</button>
+      <button class="glass press sq" data-act="phrases" data-key="${esc(k)}" aria-label="Фразы продавцу на китайском" aria-expanded="${st.phrases}">${svg(ICON.copy)}</button>
+      ${S.tab === 'feed' ? `<button class="glass press sq" data-act="hide" data-key="${esc(k)}" aria-label="Скрыть — не интересно">${svg(ICON.eyeoff)}</button>` : ''}
     </div>
     <div id="phrasesBox">${st.phrases ? phrasesHTML() : ''}</div>`;
 }
@@ -812,15 +854,17 @@ function phrasesHTML() {
   return `<div class="col screen" style="gap:8px;margin-top:14px"><div class="lh" style="margin-top:0">Фразы продавцу · нажми, чтобы скопировать</div>
     ${PHRASES.map((p, i) => `<button class="phrase press" data-act="copy" data-i="${i}"><div><b lang="zh">${p[0]}</b><span>${p[1]}</span></div><span style="color:var(--muted);flex:none">${svg(ICON.copy, 18)}</span></button>`).join('')}</div>`;
 }
+// Пока Авито выключено, честно называем блок «Себестоимость», а не «Выгода»
+const PTITLE = () => S.me && S.me.avito ? 'Выгода' : 'Себестоимость';
 function profitBox(k) {
   const st = ist(k), it = S.items[k];
-  if (st.pstate === 'loading') return `<h3>Выгода</h3><div class="sub" style="margin-bottom:10px">${S.me && S.me.avito ? 'Считаю себестоимость и смотрю цены на Авито…' : 'Считаю себестоимость…'}</div><div class="shimmer" style="height:12px;border-radius:6px;margin-bottom:8px"></div><div class="shimmer" style="height:12px;border-radius:6px;width:70%"></div>`;
+  if (st.pstate === 'loading') return `<h3>${PTITLE()}</h3><div class="sub" style="margin-bottom:10px">${S.me && S.me.avito ? 'Считаю себестоимость и смотрю цены на Авито…' : 'Считаю себестоимость…'}</div><div class="shimmer" style="height:12px;border-radius:6px;margin-bottom:8px"></div><div class="shimmer" style="height:12px;border-radius:6px;width:70%"></div>`;
   if (st.pstate === 'limit') return `<h3>Выгода</h3><div class="txt">Сравнения с Авито на этот месяц закончились. На тарифе выше их больше.</div><button class="btn sm ghost press" style="margin-top:12px" data-act="toPlans">Тарифы</button>`;
   const r = st.profit;
-  if (!r) return `<div class="between"><div><div style="font-weight:800">Выгода</div><div class="sub" style="margin-top:2px;font-weight:500">${S.me && S.me.avito ? 'Себестоимость в России и цена на Авито' : 'Себестоимость в России с доставкой и байером'}</div></div>
+  if (!r) return `<div class="between"><div><div style="font-weight:800">${PTITLE()}</div><div class="sub" style="margin-top:2px;font-weight:500">${S.me && S.me.avito ? 'Себестоимость в России и цена на Авито' : 'Себестоимость в России с доставкой и байером'}</div></div>
     <button class="btn sm ghost press" data-act="profit" data-key="${esc(k)}"${it.price == null ? ' disabled' : ''}>Посчитать</button></div>`;
   const c = r.cost, m = r.market || {};
-  let html = '<h3>Выгода</h3>';
+  let html = `<h3>${PTITLE()}</h3>`;
   if (c) {
     html += `<div class="kv"><span>Вещь · ¥${num(it.price)} по ${String(c.rate.toFixed ? c.rate.toFixed(2) : c.rate).replace('.', ',')} ₽</span><b>${num(c.base)} ₽</b></div>
       <div class="kv"><span>Байер ${String(c.fee_pct).replace('.', ',')}%</span><b>${num(c.fee)} ₽</b></div>
@@ -980,13 +1024,24 @@ function editBrandSheet(id, confirmDel) {
          <div class="row" style="margin-top:12px"><button class="btn danger press" data-act="delBrand" data-id="${id}">Удалить</button><button class="btn ghost press" data-act="editBrand" data-id="${id}">Оставить</button></div></div>`
       : `<button class="btn danger press" style="margin-top:10px" data-act="askDel" data-id="${id}">Удалить бренд</button>`}`;
 }
+function catalogChips(q) {
+  const list = S.brands.catalog.filter(c => (!q || c.title.toLowerCase().includes(q.toLowerCase())) && (!S.addGroup || c.group === S.addGroup));
+  return list.map(c => `<button class="chip press${c.tracked ? ' done' : ''}" data-act="pickBrand" data-key="${esc(c.key)}" data-title="${esc(c.title)}"${c.tracked ? ' disabled aria-disabled="true"' : ''}>${c.tracked ? '✓ ' : ''}${esc(c.title)}</button>`).join('');
+}
 function addSheetPick(q) {
   const b = S.brands, L = b.limits, ownFree = L.own_used < L.own_brands;
   const buyOwn = L.own_can_buy ? `<button class="btn sm lime press" style="margin-top:10px" data-act="buyOwn">+1 свой бренд — ${num(L.own_addon_stars)} ⭐/мес</button>` : '';
-  const list = b.catalog.filter(c => !q || c.title.toLowerCase().includes(q.toLowerCase()));
-  return `<div class="sbrand">Новый бренд</div><div class="txt" style="margin-top:4px">Выбери из каталога — его проверяем чаще всего.</div>
+  const auto = S.me && !S.me.access && S.me.trial_available
+    ? `<div class="tbar" style="margin-top:12px"><span>🎁 Первый бренд включит <b>тест-драйв на ${esc(trialDays())}</b> — бесплатно, без карты</span></div>` : '';
+  // Вкладки групп каталога («Люкс-дома», «Стритвир», …) — если сервер их прислал
+  const groups = (b.groups || []).filter(g => b.catalog.some(c => c.group === g));
+  if (!groups.includes(S.addGroup)) S.addGroup = '';
+  const tabs = groups.length > 1 ? `<div class="chips scroll" role="toolbar" aria-label="Группы брендов" style="margin-bottom:10px">
+      <button class="chip press${S.addGroup ? '' : ' on'}" data-act="addGroup" data-g="">Все <small>${b.catalog.length}</small></button>
+      ${groups.map(g => `<button class="chip press${S.addGroup === g ? ' on' : ''}" data-act="addGroup" data-g="${esc(g)}">${esc(g)} <small>${b.catalog.filter(c => c.group === g).length}</small></button>`).join('')}</div>` : '';
+  return `<div class="sbrand">Новый бренд</div><div class="txt" style="margin-top:4px">Выбери из каталога — его проверяем чаще всего.</div>${auto}
     <div class="label">Каталог HUNTR</div>
-    <div class="wrapchips">${list.map(c => `<button class="chip press${c.tracked ? ' done' : ''}" data-act="pickBrand" data-key="${esc(c.key)}" data-title="${esc(c.title)}"${c.tracked ? ' disabled aria-disabled="true"' : ''}>${c.tracked ? '✓ ' : ''}${esc(c.title)}</button>`).join('')}</div>
+    ${tabs}<div class="wrapchips" id="catList">${catalogChips(q)}</div>
     <div class="label">Свой бренд</div>
     ${ownFree ? `<div class="field"><input class="input" id="ownBrand" placeholder="Например, Our Legacy" maxlength="60" aria-label="Название бренда"><button class="btn lime sm press" data-act="pickOwn" style="height:50px">Дальше</button></div>
       <div class="foot">Можно на английском или китайском. Свои: ${L.own_used} из ${L.own_brands}.</div>`
@@ -999,7 +1054,7 @@ function addSheetBudget(title) {
   return `<button class="chip press" data-act="addBrand" style="margin-bottom:12px" aria-label="Назад к выбору бренда">← Назад</button>
     <div class="sbrand">${esc(title)}</div><div class="txt" style="margin-top:4px">В какой бюджет искать? Дорогие и дешёвые лоты отсекутся сами.</div>
     ${budgetHTML(S.addSel)}<div id="sheetErr"></div>
-    <button class="btn lime press" style="margin-top:18px" data-act="submitBrand">Добавить в радар</button>`;
+    <button class="btn lime press" style="margin-top:18px" data-act="submitBrand">${S.me && !S.me.access ? 'Добавить и включить тест-драйв' : 'Добавить в радар'}</button>`;
 }
 function showSheetErr(text) { const e = $('sheetErr'); if (e) e.innerHTML = `<div class="err" role="alert">${esc(text)}</div>`; else toast(text); hapticNote('error'); }
 async function submitBrand(btn) {
@@ -1008,6 +1063,12 @@ async function submitBrand(btn) {
   try {
     const r = await api('/api/brands', { method: 'POST', body: { keyword: S.addKey, price_min: b.min, price_max: b.max } });
     hapticNote('success'); closeSheet();
+    if (r.trial_until) {
+      // Первый бренд включил тест-драйв: уходим с пейвола в приложение, на вкладку брендов
+      await Promise.all([loadBrands(), loadMe()]); S.feed = null; S.tab = 'brands'; render();
+      toast(`Тест-драйв включён до ${dateTimeRu(r.trial_until)} — радар уже ищет`);
+      return;
+    }
     toast(r.is_new ? 'Готово! Первые находки скоро в ленте' : 'Бюджет обновлён');
     await Promise.all([loadBrands(), loadMe()]); S.feed = null; if (S.tab === 'brands') renderView(false);
   } catch (e) {
@@ -1059,23 +1120,27 @@ function planCards() {
   const P = S.plans;
   if (!P) return '<div class="glass skel" style="height:190px;border-radius:24px"></div>'.repeat(2);
   const me = S.me, cur = me.access ? me.plan.code : null;
-  return compareHTML() + P.plans.map((p, i) => {
-    const isCur = p.code === cur, soldOut = p.seats_left === 0;
+  // На тесте (или до/сразу после него) советуем PRO — один понятный выбор
+  const rec = !me.admin && me.plan && me.plan.code === 'trial';
+  return P.plans.map((p, i) => {
+    const isCur = p.code === cur, soldOut = p.seats_left === 0, isRec = rec && p.code === 'pro';
     let btns;
     if (!P.payments_enabled) btns = `<div class="foot">Оплата временно недоступна — загляни чуть позже.</div>`;
     else if (soldOut && !isCur) btns = `<div class="btns"><button class="btn ghost" disabled>Мест нет</button></div>`;
-    else btns = `<div class="btns"><button class="btn ${isCur ? 'ghost' : 'lime'} press" data-act="buy" data-plan="${p.code}" data-m="1">${isCur ? 'Продлить · ' : ''}Месяц ⭐</button>${p.quarter_stars ? `<button class="btn ghost press" data-act="buy" data-plan="${p.code}" data-m="3">3 месяца ⭐</button>` : ''}</div>
-      ${p.quarter_stars ? `<div class="foot" style="margin-top:8px">3 месяца — ${num(p.quarter_stars)} ⭐ разом, выгоднее на 15%</div>` : ''}`;
-    return `<div class="plan rise${isCur ? ' cur' : ''}" style="animation-delay:${60 + i * 70}ms">
-      <div class="between" style="align-items:baseline"><div class="row"><div class="pn">${esc(p.title)}</div>${isCur ? '<span class="badge">ТВОЙ</span>' : ''}</div>
+    else btns = `<div class="btns"><button class="btn ${!isCur && p.code === 'pro' ? 'lime' : 'ghost'} press" data-act="buy" data-plan="${p.code}" data-m="1">${isCur ? 'Продлить · Месяц ⭐' : `Месяц · ${num(p.price_stars)} ⭐`}</button>${p.quarter_stars ? `<button class="btn ghost press" data-act="buy" data-plan="${p.code}" data-m="3">3 мес · ${num(p.quarter_stars)} ⭐</button>` : ''}</div>
+      ${p.quarter_stars ? `<div class="foot" style="margin-top:8px">3 месяца разом — экономия ${num(p.price_stars * 3 - p.quarter_stars)} ⭐ (−15%)</div>` : ''}`;
+    return `<div class="plan rise${isCur || (!cur && p.code === 'pro') ? ' cur' : ''}${isRec ? ' rec' : ''}" style="animation-delay:${60 + i * 70}ms">
+      <div class="between" style="align-items:baseline"><div class="row"><div class="pn">${esc(p.title)}</div>${isCur ? '<span class="badge">ТВОЙ</span>' : isRec ? '<span class="badge">СОВЕТУЕМ</span>' : p.code === 'pro' ? '<span class="badge">ХИТ</span>' : ''}</div>
         <div style="text-align:right"><div class="pp">${num(p.price_stars)} ⭐<span class="per">/мес</span></div><div class="sub" style="font-size:12px">≈ ${num(p.price_stars * P.star_rub)} ₽</div></div></div>
       ${p.tagline ? `<div style="font-size:13px;margin-top:6px;color:var(--muted2)">${esc(p.tagline)}</div>` : ''}
       <ul>${p.perks.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
       ${p.seats_left != null ? `<div class="pill ${soldOut ? 'bad' : 'lime'}" style="display:inline-block;margin-top:12px">${soldOut ? 'Все места заняты' : `Осталось мест: ${p.seats_left} из ${p.seats}`}</div>` : ''}
       ${btns}</div>`;
-  }).join('');
+  }).join('') + compareHTML();
 }
 const LOCK = `<span class="lock" aria-hidden="true">${svg('M7 11V8a5 5 0 0 1 10 0v3 M5 11h14v10H5z', 13, 2)}</span>`;
+// Какой тариф предлагать в апселле — кнопка сразу открывает счёт, без лишнего экрана
+const UPSELL_PLAN = { instant: 'pro', photos: 'pro', assistant: 'elite' };
 const UPSELL = {
   instant: ['«Сразу» — в PRO и ELITE', 'Находка прилетает в ту же минуту, как радар её поймал, — и ты пишешь продавцу первым. На START — сводка раз в 30 минут.'],
   photos: ['Все фото вещи — с PRO', 'На START видно только обложку. В PRO и ELITE — вся галерея объявления: бирки, швы, фурнитура.'],
@@ -1085,30 +1150,71 @@ function upsell(f) {
   const u = UPSELL[f] || UPSELL.assistant;
   hapticNote('warning');
   openSheet(`<h2 class="h1" style="font-size:22px">${esc(u[0])}</h2><div class="txt" style="margin-top:10px">${esc(u[1])}</div>
-    <button class="btn lime press" style="margin-top:18px;width:100%;height:52px" data-act="toPlans">Сравнить тарифы</button>`, 'upsell');
+    ${(() => { const p = S.plans && S.plans.payments_enabled && S.plans.plans.find(x => x.code === (UPSELL_PLAN[f] || 'elite'));
+      return p ? `<button class="btn lime press" style="margin-top:18px;width:100%;height:52px" data-act="buy" data-plan="${p.code}" data-m="1">Подключить ${esc(p.title)} — ${num(p.price_stars)} ⭐/мес</button>
+        <button class="btn ghost press" style="margin-top:10px;width:100%;height:48px" data-act="toPlans">Сравнить тарифы</button>`
+        : `<button class="btn lime press" style="margin-top:18px;width:100%;height:52px" data-act="toPlans">Сравнить тарифы</button>`; })()}`, 'upsell');
+  if (!S.plans) loadPlans().catch(() => { });
 }
 /* ---------- 🤖 ИИ-помощник по переписке (ELITE) ---------- */
 const AI_INTENTS = [['bargain', '💰 Поторговаться'], ['photos', '📸 Какие фото попросить'], ['verdict', '🛡 Итог по риску'], ['alt', '🔁 Другой вариант']];
 const AI_VERDICT = { likely_real: 'похоже на оригинал', unclear: 'пока непонятно', likely_fake: 'похоже на подделку' };
 const AI_CHANGE = { better: ' · ↗ стало лучше', worse: ' · ↘ стало хуже', same: ' · → без изменений', first: '' };
 const AI_INTENT_TEXT = { alt: 'Другой вариант ответа', bargain: 'Помоги поторговаться', photos: 'Какие фото попросить?', verdict: 'Итог по риску' };
-function openAssistant(k) {
+// Разговоры с помощником общие с ботом: "general" — общий, "goofish:123" — про конкретную вещь.
+// k — ключ вещи из ленты; thread — имя разговора (из «Мои разговоры» или из ссылки ?ai=...);
+// back — показать «‹ Все разговоры» (открыли из списка).
+function openAssistant(k, thread, back) {
   const me = S.me;
   if (!me.plan.assistant) { upsell('assistant'); return; }
   const it = k ? S.items[k] : null;
-  S.ai = { key: k || null, source: it ? it.source : null, item_id: it ? it.item_id : null, msgs: null, left: null, total: me.plan.assistant, about: null, files: [], busy: false };
-  openSheet(aiHTML(), 'assistant');
+  let source = it ? it.source : null, item_id = it ? it.item_id : null;
+  if (!it && thread && thread !== 'general') {
+    const i = thread.indexOf(':');
+    if (i > 0) { source = thread.slice(0, i); item_id = thread.slice(i + 1); }
+  }
+  S.ai = { key: k || null, source, item_id, back: !!back, threads: null, msgs: null, left: null, total: me.plan.assistant, about: null, files: [], busy: false };
+  // Если шторка помощника уже открыта (переход между разговорами) — просто меняем содержимое
+  if (S.sheet && S.sheet.name === 'assistant') { setSheet(aiHTML()); const sh = document.querySelector('.sheet-wrap .sheet'); if (sh) sh.scrollTop = 0; }
+  else openSheet(aiHTML(), 'assistant');
   loadAssistant();
 }
 function aiQuery() { const a = S.ai; return a.source ? `?source=${encodeURIComponent(a.source)}&item_id=${encodeURIComponent(a.item_id)}` : ''; }
 async function loadAssistant() {
+  const a = S.ai;
   try {
-    const r = await api('/api/assistant' + aiQuery());
-    if (!S.ai) return;
-    Object.assign(S.ai, { msgs: r.messages || [], left: r.left, total: r.total, about: r.about, ai: r.ai });
+    // В общем разговоре сверху показываем «Мои разговоры» — и из бота, и из приложения
+    const [r, t] = await Promise.all([
+      api('/api/assistant' + aiQuery()),
+      a.source ? Promise.resolve(null) : api('/api/assistant/threads').catch(() => null),
+    ]);
+    if (S.ai !== a) return;   // пока грузили, человек открыл другой разговор
+    Object.assign(a, { msgs: r.messages || [], left: r.left, total: r.total, about: r.about, ai: r.ai, threads: t ? t.threads || [] : [] });
     if (!r.enabled) { closeSheet(); upsell('assistant'); return; }
-  } catch (e) { fail(e); if (S.ai) S.ai.msgs = []; }
-  renderAI(true);
+  } catch (e) { fail(e); if (S.ai === a) a.msgs = []; }
+  if (S.ai === a) renderAI(true);
+}
+// Ссылка на этот же разговор в чате с ботом: t.me/<бот>?start=ai или ?start=ai_goofish_123
+function aiTgLink() {
+  const a = S.ai, bot = S.me && S.me.bot;
+  if (!bot || !a) return null;
+  return `https://t.me/${bot}?start=` + (a.source ? `ai_${a.source}_${a.item_id}` : 'ai');
+}
+function aiOpenTg() {
+  const link = aiTgLink(); if (!link) return;
+  if (tg && tg.openTelegramLink) tg.openTelegramLink(link); else openLink(link);
+}
+function aiWhen(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000), now = new Date();
+  return d.toDateString() === now.toDateString() ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : dateRu(ts);
+}
+function aiThreadsHTML() {
+  const list = (S.ai.threads || []).filter(t => t.thread !== 'general');
+  if (!list.length) return '';
+  return `<div class="thr-h">Мои разговоры</div><div class="thr">${list.slice(0, 8).map(t => `<button class="glass press" data-act="aiThread" data-t="${esc(t.thread)}">
+      <span><b>${esc(t.about || 'Разговор')}</b><small>${t.last_via === 'bot' ? 'В боте · ' : ''}${esc(t.last_text || '')}</small></span><i>${esc(aiWhen(t.last_at))}</i></button>`).join('')}</div>
+    <div class="thr-h">Общий разговор</div>`;
 }
 function aiReplyHTML(r) {
   let h = '';
@@ -1121,13 +1227,16 @@ function aiReplyHTML(r) {
   return h || '<p>Готово.</p>';
 }
 function aiMsgHTML(m) {
+  // Сообщения, которые пришли из чата с ботом, помечаем маленьким «из бота»
+  const via = m.via === 'bot' ? '<span class="via">из бота</span>' : '';
   if (m.role === 'user') {
     const label = m.intent ? `<small>${esc(AI_INTENT_TEXT[m.intent] || '')}</small>` : '';
+    // Сами фото не хранятся — показываем только, сколько их было
     const ph = m.photos ? `<div style="color:var(--muted2);font-size:12px;margin-top:${m.text ? 4 : 0}px">📷 ${m.photos} фото</div>` : '';
-    return `<div class="bub me">${label}${m.text ? esc(m.text) : ''}${ph}</div>`;
+    return `<div class="bub me">${via}${label}${m.text ? esc(m.text) : ''}${ph}</div>`;
   }
   if (m.pending) return `<div class="bub ai"><div class="sub">Читаю и думаю… обычно 10–30 секунд</div><div class="shimmer" style="height:10px;border-radius:5px;margin-top:8px;width:180px"></div></div>`;
-  return `<div class="bub ai">${aiReplyHTML(m.reply || {})}</div>`;
+  return `<div class="bub ai">${via}${aiReplyHTML(m.reply || {})}</div>`;
 }
 function aiListHTML() {
   const a = S.ai;
@@ -1142,8 +1251,11 @@ function aiThumbsHTML() {
 function aiHTML() {
   const a = S.ai;
   const left = a.left != null ? `Осталось сообщений: ${num(a.left)} из ${num(a.total)}` : '';
-  return `<div class="ai-head"><div style="min-width:0"><h2 class="h1">ИИ-помощник</h2><div class="sub" style="margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.about || 'Переписка с продавцом')}</div></div>
+  return `${a.back ? `<button class="lbtn press" data-act="aiBack" style="margin-bottom:6px">‹ Все разговоры</button>` : ''}
+    <div class="ai-head"><div style="min-width:0"><h2 class="h1">ИИ-помощник</h2><div class="sub" style="margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.about || (a.source ? 'Переписка с продавцом' : 'Общий разговор'))}</div></div>
       ${a.msgs && a.msgs.length ? `<button class="lbtn press" data-act="aiClear">Очистить</button>` : ''}</div>
+    ${aiTgLink() ? `<button class="ai-tg press" data-act="aiTg">${svg(ICON.chat, 16)}Продолжить в Telegram-чате</button>` : ''}
+    ${a.source ? '' : aiThreadsHTML()}
     <div class="ai-list" id="aiList" aria-live="polite">${aiListHTML()}</div>
     <div class="ai-chips">${AI_INTENTS.map(([v, l]) => `<button class="chip press" data-act="aiIntent" data-v="${v}"${a.busy ? ' disabled' : ''}>${l}</button>`).join('')}</div>
     <div class="composer"><div id="aiThumbs">${aiThumbsHTML()}</div>
@@ -1223,7 +1335,7 @@ function profileScreen() {
   const me = S.me, p = me.plan, s = me.settings;
   const modes = [['digest', 'Сводкой'], ['instant', 'Сразу'], ['off', 'Только лента']];
   const mi = Math.max(0, modes.findIndex(m => m[0] === s.notify));
-  const badge = me.admin ? 'АДМИН' : p.code === 'trial' ? 'ПРОБНЫЙ' : 'АКТИВЕН';
+  const badge = me.admin ? 'АДМИН' : p.code === 'trial' ? 'ТЕСТ-ДРАЙВ' : 'АКТИВЕН';
   return `<div><div class="sub">Привет, ${esc(me.user.first_name || 'охотник')}</div><h1 class="h1" style="margin-top:4px">Профиль</h1></div>
     <div class="glass rise" style="border-radius:26px;padding:18px;display:flex;flex-direction:column;gap:12px">
       <div class="between"><div style="font-weight:800;font-size:18px">${esc(p.title)}${p.until ? ' · до ' + dateRu(p.until) : ''}</div><div class="badge">${badge}</div></div>
@@ -1242,12 +1354,12 @@ function profileScreen() {
         ['digest', 'Сводкой', `раз в ${s.every || 30} мин приходит одно сообщение: «12 новых · LV 5 · Gucci 4». Листаешь находки прямо в нём. Лучший вариант, если брендов много.`],
         ['instant', 'Сразу', 'каждая находка приходит отдельным сообщением в ту же минуту, как радар её поймал. Быстрее всех, но сообщений много.'],
         ['off', 'Только лента', 'в чат ничего не приходит. Все находки копятся здесь, во вкладке «Лента» — смотришь, когда удобно.'],
-      ].map(([v, t, d]) => `<div class="nrow${s.notify === v ? ' on' : ''}"><b>${t}</b> — ${d}</div>`).join('')}</div>
+      ].filter(([v]) => v === s.notify).map(([v, t, d]) => `<div class="nrow on"><b>${t}</b> — ${d}</div>`).join('')}</div>
       <div class="between" style="margin-top:12px"><div><div style="font-weight:700">Тихие часы</div><div class="sub" style="font-weight:500">00:00–08:00 без звука</div></div><div class="swwrap"><button class="switch press" role="switch" aria-checked="${!!s.quiet}" aria-label="Тихие часы" data-act="quiet"></button></div></div>
       <div class="between" style="margin-top:4px"><div><div style="font-weight:700">Пауза радара</div><div class="sub" style="font-weight:500">Не искать новые вещи</div></div><div class="swwrap"><button class="switch press" role="switch" aria-checked="${!!me.paused}" aria-label="Пауза радара" data-act="pause"></button></div></div>
     </div>
     <details class="glass box rise acc" id="calcAcc" style="animation-delay:120ms"${S.calcOpen ? ' open' : ''}>
-      <summary><div style="min-width:0"><h3>Калькулятор выгоды</h3><div class="sub" id="calcSum" style="font-weight:500;margin-top:3px">${calcSum(s)}</div></div>${svg('M6 9l6 6 6-6', 18)}</summary>
+      <summary><div style="min-width:0"><h3>Калькулятор себестоимости</h3><div class="sub" id="calcSum" style="font-weight:500;margin-top:3px">${calcSum(s)}</div></div>${svg('M6 9l6 6 6-6', 18)}</summary>
       <div class="txt" style="margin-top:10px">Твои цифры для расчёта себестоимости.</div>
       <div class="between" style="margin-top:12px"><span style="font-weight:700">Доставка, ₽/кг</span><div class="stepper"><button class="press" data-act="step" data-f="delivery" data-d="-100" aria-label="Меньше">−</button><output id="o-delivery">${num(s.delivery)}</output><button class="press" data-act="step" data-f="delivery" data-d="100" aria-label="Больше">+</button></div></div>
       <div class="between" style="margin-top:8px"><span style="font-weight:700">Байер, %</span><div class="stepper"><button class="press" data-act="step" data-f="fee" data-d="-1" aria-label="Меньше">−</button><output id="o-fee">${String(s.fee).replace('.', ',')}</output><button class="press" data-act="step" data-f="fee" data-d="1" aria-label="Больше">+</button></div></div>
@@ -1255,7 +1367,8 @@ function profileScreen() {
     </details>
     <h2 class="h1" style="font-size:22px;margin-top:8px">Тарифы</h2>
     ${planCards()}
-    <div class="foot" style="text-align:center">Оплата звёздами Telegram. Месяц продлевается сам, отменить можно в настройках Telegram.</div>`;
+    <div class="foot" style="text-align:center">Оплата звёздами Telegram. Месяц продлевается сам, отменить можно в настройках Telegram.</div>
+    ${me.bot ? `<button class="glass press aibtn" data-act="invite">${svg('M16 11a4 4 0 1 0-8 0 M3 21a7 7 0 0 1 12-5 M19 14v6 M16 17h6', 22)}<span><b>Пригласи друга — +${me.ref_days || 7} дней тебе</b><small>Друг получает пробный период. Как только он оплатит тариф — тебе дни к подписке.</small></span></button>` : ''}`;
 }
 const calcSum = s => `Доставка ${num(s.delivery)} ₽/кг · байер ${String(s.fee).replace('.', ',')}%`;
 function saveSettings(patch, rerender = true) {
@@ -1314,9 +1427,13 @@ function paywall() {
       <div class="logo">${LOGO(34)}<b>HUNTR</b></div>
       <div class="hero" style="font-size:31px">Охота на люкс<br><span>с Goofish</span></div>
       <div class="txt" style="margin-top:-6px">Новые объявления выбранных брендов — раньше других перекупщиков.</div>
+      ${me.trial_available ? `<div class="tcta glass rise" style="animation-delay:40ms">
+        <div class="k">ТЕСТ-ДРАЙВ</div><div class="h">${esc(trialDays())} бесплатно</div>
+        <div class="txt">Без оплаты и без карты. Закончится сам — ничего не спишется, отменять не нужно.</div>
+        <button class="btn lime press" style="height:56px;font-size:16px;margin-top:14px" data-act="trial">Включить ${esc(trialDays())} бесплатно</button>
+        <button class="lbtn press" style="display:block;margin:10px auto 0" data-act="trialPick">или сразу выбери бренд — тест включится сам</button></div>` : ''}
       ${B.map((b, i) => `<div class="benefit glass rise" style="animation-delay:${80 + i * 70}ms"><div class="ic">${svg(b[0], 22)}</div><div><b>${b[1]}</b><span>${b[2]}</span></div></div>`).join('')}
-      ${me.trial_available ? `<button class="btn lime press rise" style="height:58px;font-size:16px;animation-delay:300ms" data-act="trial">Попробовать ${me.trial_days || 3} ${plural(me.trial_days || 3, 'день', 'дня', 'дней')} бесплатно</button><div class="foot" style="text-align:center;margin-top:-8px">Без карты и автосписаний</div>`
-      : `<div class="glass box"><b>Пробный период уже был</b><div class="txt" style="margin-top:4px">Выбери тариф — радар продолжит с того же места.</div></div>`}
+      ${me.trial_available ? '' : `<div class="glass box"><b>Тест-драйв уже был</b><div class="txt" style="margin-top:4px">Выбери тариф — радар продолжит с того же места.</div></div>`}
       <h2 class="h1" style="font-size:22px;margin-top:6px">Тарифы</h2>
       ${planCards()}
     </div></div>`;
@@ -1371,17 +1488,29 @@ const ACT = {
   aiSend: () => aiSend(null),
   aiIntent: el => aiSend(el.dataset.v),
   aiClear: () => aiClear(),
+  aiThread: el => openAssistant(null, el.dataset.t, true),
+  aiBack: () => openAssistant(null),
+  aiTg: () => aiOpenTg(),
   aiRmPhoto: el => { const f = S.ai.files.splice(+el.dataset.i, 1)[0]; if (f) URL.revokeObjectURL(f.url); $('aiThumbs').innerHTML = aiThumbsHTML(); },
   aiCopy: async el => { await copyText(el.dataset.t); hapticNote('success'); toast('Скопировано — вставь в чат с продавцом'); },
   phrases: el => { const st = ist(el.dataset.key); st.phrases = !st.phrases; el.setAttribute('aria-expanded', st.phrases); $('phrasesBox').innerHTML = st.phrases ? phrasesHTML() : ''; if (st.phrases) $('phrasesBox').scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'nearest' }); },
   copy: async el => { const p = PHRASES[+el.dataset.i]; await copyText(p[0]); hapticNote('success'); toast(p[0] + ' — скопировано'); },
-  toPlans: () => { closeSheet(); goTab('profile'); setTimeout(() => { const h = [...document.querySelectorAll('#view h2')].pop(); if (h) h.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' }); }, 450); },
+  toPlans: () => {
+    closeSheet();
+    // На пейволе тарифы — на нём же: просто прокручиваем к ним
+    if (!S.me || !S.me.access) { const h = [...document.querySelectorAll('#full h2')].pop(); if (h) h.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' }); return; }
+    goTab('profile'); setTimeout(() => { const h = [...document.querySelectorAll('#view h2')].pop(); if (h) h.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' }); }, 450); },
   toggleBrand: el => toggleBrand(el),
   editBrand: el => { const id = +el.dataset.id; if (S.sheet && S.sheet.name === 'brand') setSheet(editBrandSheet(id)); else openSheet(editBrandSheet(id), 'brand'); },
   askDel: el => { setSheet(editBrandSheet(+el.dataset.id, true)); haptic('medium'); },
   delBrand: el => delBrand(el),
   saveBrand: el => saveBrand(el),
   addBrand: () => { if (S.sheet && S.sheet.name === 'add') setSheet(addSheetPick()); else openSheet(addSheetPick(), 'add'); },
+  addGroup: el => {
+    hapticSel(); S.addGroup = el.dataset.g;
+    el.parentNode.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === el));
+    const box = $('catList'); if (box) box.innerHTML = catalogChips();
+  },
   pickBrand: el => { hapticSel(); S.addKey = el.dataset.key; setSheet(addSheetBudget(el.dataset.title)); },
   pickOwn: () => { const v = ($('ownBrand').value || '').trim(); if (!v) { showSheetErr('Напиши название бренда'); return; } S.addKey = v; setSheet(addSheetBudget(v)); },
   preset: el => {
@@ -1410,8 +1539,27 @@ const ACT = {
   buyOwn: el => buyOwn(el),
   trial: async el => {
     el.disabled = true;
-    try { await api('/api/trial', { method: 'POST', body: {} }); hapticNote('success'); await loadMe(); S.tab = 'brands'; render(); refreshTab('brands'); toast('Пробный период включён — выбери бренды'); }
-    catch (e) { el.disabled = false; toast(e.status === 409 ? 'Пробный период уже был' : errText(e)); }
+    try {
+      const r = await api('/api/trial', { method: 'POST', body: {} }); hapticNote('success'); await loadMe(); S.tab = 'brands'; render();
+      toast(`Тест-драйв включён до ${dateTimeRu(r.until)} — выбери бренды`);
+      // Сразу открываем каталог: следующий шаг — выбрать бренд, не надо его искать
+      refreshTab('brands').then(() => { if (S.tab === 'brands' && S.brands && !S.brands.items.length) ACT.addBrand(); });
+    }
+    catch (e) { el.disabled = false; toast(e.status === 409 ? 'Тест-драйв уже был' : errText(e)); }
+  },
+  // Пейвол → «сразу выбери бренд»: каталог в шторке поверх пейвола, тест включится при сохранении
+  trialPick: async el => {
+    el.disabled = true;
+    try {
+      await loadBrands(); openSheet(addSheetPick(), 'add');
+      const w = $('sheetRoot').firstElementChild; if (w) w.classList.add('over');
+    } catch (e) { fail(e); } finally { el.disabled = false; }
+  },
+  // «Пригласи друга»: ссылка ?start=ref_<id> уже обрабатывается ботом (handlers/start.py)
+  invite: () => {
+    const link = `https://t.me/${S.me.bot}?start=ref_${S.me.user.id}`;
+    const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('HUNTR — находки с Goofish раньше всех: перевод, цена в ₽ и легит-чек')}`;
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(url); else openLink(url);
   },
   retry: () => boot(true)
 };
@@ -1419,7 +1567,7 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if (!el || el.disabled) return;
   const fn = ACT[el.dataset.act]; if (!fn) return;
-  if (!['filter', 'preset', 'notify', 'every', 'step', 'pickBrand'].includes(el.dataset.act)) haptic();
+  if (!['filter', 'preset', 'notify', 'every', 'step', 'pickBrand', 'addGroup'].includes(el.dataset.act)) haptic();
   fn(el, e);
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.sheet) closeSheet(); if (e.key === 'Enter' && e.target.id === 'ownBrand') ACT.pickOwn(); });
@@ -1427,6 +1575,14 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) { flu
 document.addEventListener('toggle', e => { if (e.target && e.target.id === 'calcAcc') S.calcOpen = e.target.open; }, true);
 
 /* ---------- старт ---------- */
+// Какой разговор с помощником открыть при старте: бот даёт ссылку .../app?ai=goofish%3A123
+// (на всякий случай понимаем и #ai=...). Имя проверяем тем же правилом, что и сервер.
+function startThread() {
+  let t = null;
+  try { t = new URLSearchParams(location.search).get('ai'); } catch (e) { }
+  if (!t) { const m = /(?:^#|&)ai=([^&]+)/.exec(location.hash || ''); if (m) { try { t = decodeURIComponent(m[1]); } catch (e) { } } }
+  return t && /^(general|[a-z0-9_]{1,20}:[0-9A-Za-z_-]{1,40})$/.test(t) ? t : null;
+}
 async function boot(again) {
   const splash = $('splash');
   const t0 = Date.now();
@@ -1436,7 +1592,13 @@ async function boot(again) {
   }
   const wait = again || REDUCED ? 0 : Math.max(0, 1150 - (Date.now() - t0));
   setTimeout(() => {
-    if (err) errorScreen(err); else render();
+    if (err) errorScreen(err);
+    else {
+      render();
+      // Открыли из бота кнопкой «📱 Вся переписка в приложении» — сразу показываем тот разговор
+      const t = again ? null : startThread();
+      if (t && S.me && S.me.access) openAssistant(null, t, t !== 'general');
+    }
     if (splash) {
       if (REDUCED) splash.remove();
       else { splash.classList.add('exit'); setTimeout(() => splash.remove(), 450); }

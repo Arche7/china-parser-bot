@@ -1,9 +1,11 @@
 """
-Первое знакомство: /start, заставка, слайды «как это работает», пробный период.
+Первое знакомство: /start, заставка, слайды «как это работает», кнопка тест-драйва.
+Сам тест-драйв (включение, отсчёт, напоминания) — в handlers/trial.py.
 """
 
 import logging
 import os
+import re
 
 from aiogram import F, Router
 from aiogram.filters import CommandObject, CommandStart
@@ -11,16 +13,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 import config
-import plans
 import texts
 from db import Database
 from handlers.common import (
-    REPLY_KB, btn, esc, human_date, kb, safe_answer, trial_days_text, webapp_button,
+    REPLY_KB, btn, esc, kb, safe_answer, trial_days_text, webapp_button,
 )
 from handlers.home import send_home
+from handlers.trial import start_trial, started_message
 
 log = logging.getLogger(__name__)
 router = Router(name="start")
+
+# Короткие метки соцсетей для ссылок t.me/<бот>?start=<метка>
+SOURCE_TAGS = {"tt", "ig", "tg", "vk", "yt"}
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 INTRO = os.path.join(ASSETS, "intro.mp4")
@@ -63,7 +68,7 @@ async def slide_keyboard(db: Database, user_id: int, index: int):
         if await db.has_access(user_id):
             rows.append([btn("➕ Добавить первый бренд", "b:add:0")])
         elif user and not user["trial_used"] and config.TRIAL_DAYS:
-            rows.append([btn(f"🎁 Начать бесплатно — {trial_days_text()}", "trial")])
+            rows.append([btn(f"🎁 Включить {trial_days_text()} бесплатно", "trial")])
         else:
             rows.append([btn("💎 Выбрать тариф", "pl:open")])
         rows.append([btn("Главная", "h:home")])
@@ -89,6 +94,10 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, stat
 
     # Реферальная ссылка: t.me/бот?start=ref_123
     arg = (command.args or "").strip()
+    # Метка соцсети: t.me/бот?start=tt (TikTok), ig, tg, vk, yt или src_<что угодно>
+    # (например src_blogger1 для блогера). Запоминаем первое касание — его видно в /report.
+    if arg in SOURCE_TAGS or re.fullmatch(r"src_[a-z0-9_]{1,24}", arg):
+        await db.set_source(user.id, arg)
     if arg.startswith("ref_") and arg[4:].isdigit():
         await db.set_ref(user.id, int(arg[4:]))
     # ИИ-помощник из приложения: t.me/бот?start=ai или ?start=ai_goofish_123 (с контекстом вещи)
@@ -107,11 +116,18 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, stat
 
     name = esc(user.first_name or "друг")
     if is_new:
-        caption = texts.WELCOME_NEW.format(name=name)
-        markup = kb([webapp_button()] if webapp_button() else [],
-                    [btn("▶️ Как это работает", "ob:0")],
-                    [btn(f"🎁 Сразу попробовать — {trial_days_text()}", "trial")] if config.TRIAL_DAYS else [],
-                    [btn("Главная", "h:home")])
+        # Тест-драйв — ГЛАВНАЯ кнопка: одна яркая, остальное ниже и спокойнее.
+        # Раньше он был одним из трёх равных вариантов, и его легко было не заметить.
+        if config.TRIAL_DAYS and not record["trial_used"]:
+            caption = texts.WELCOME_NEW.format(name=name, trial_days=trial_days_text())
+            markup = kb([btn(f"🎁 Включить {trial_days_text()} бесплатно", "trial")],
+                        [btn("▶️ Как это работает", "ob:0")],
+                        [webapp_button()] if webapp_button() else [])
+        else:
+            caption = texts.WELCOME_NEW_NO_TRIAL.format(name=name)
+            markup = kb([btn("▶️ Как это работает", "ob:0")],
+                        [webapp_button()] if webapp_button() else [],
+                        [btn("Главная", "h:home")])
         try:
             if os.path.exists(INTRO) or "intro" in _file_ids:
                 sent = await message.answer_animation(
@@ -164,18 +180,16 @@ async def cb_noop(callback: CallbackQuery) -> None:
 async def cb_trial(callback: CallbackQuery, db: Database) -> None:
     user_id = callback.from_user.id
     if not config.TRIAL_DAYS:
-        await safe_answer(callback, "Пробный период сейчас недоступен", alert=True)
+        await safe_answer(callback, "Тест-драйв сейчас недоступен", alert=True)
         return
-    until = await db.start_trial(user_id, config.TRIAL_DAYS)
+    # Общая функция для бота, приложения и автозапуска: запоминает начало теста для напоминаний
+    until = await start_trial(db, user_id)
     if until is None:
         if await db.has_access(user_id):
             await safe_answer(callback, "У тебя уже есть доступ 🙂")
         else:
             await safe_answer(callback, texts.TRIAL_USED, alert=True)
         return
-    await safe_answer(callback, "Готово! 🎁")
-    text = texts.TRIAL_STARTED.format(until=human_date(until), brands=plans.TRIAL.brands)
-    await callback.message.answer(
-        text,
-        reply_markup=kb([btn("➕ Выбрать бренды", "b:add:0")]),
-    )
+    await safe_answer(callback, "Тест-драйв включён 🎁")
+    text, markup = started_message(until)
+    await callback.message.answer(text, reply_markup=markup)

@@ -11,6 +11,7 @@
   payments.py   — приём оплаты звёздами, возвраты, /paysupport, /terms
   assistant.py  — 🤖 ИИ-помощник по переписке с продавцом (ELITE)
   admin.py      — команды админа
+  trial.py      — тест-драйв (пробный период): автозапуск, отсчёт, напоминания
 """
 
 from typing import Any, Awaitable, Callable
@@ -23,13 +24,31 @@ import config
 import texts
 from db import Database
 from handlers import admin, assistant, brands_ui, feed_ui, home, listing, payments, plans_ui, settings_ui, start
-from handlers.common import OLD_HOME, btn, kb, trial_days_text
+from handlers.common import OLD_HOME, btn, kb, trial_days_text, trial_eligible
 
 # Что можно делать БЕЗ подписки: познакомиться, посмотреть тарифы, включить пробный период
 PUBLIC_COMMANDS = {"/start", "/help", "/id", "/menu", "/paysupport", "/support", "/terms"}
 PUBLIC_TEXT = set(OLD_HOME)
 # as:open — рассказ про ИИ-помощника (продаёт ELITE); сам помощник проверяет доступ внутри
 PUBLIC_CALLBACKS = ("ob:", "noop", "trial", "pl:", "h:home", "h:help", "as:open")
+# Тест-драйв: кто ещё не пробовал, может сразу выбирать бренд — без замка.
+# Тест включится сам, когда бренд сохранится (brands_ui.finish_add → trial.autostart_trial).
+# Лимиты для такого человека — как в тесте (common.user_plan), так что больше теста не дадим.
+TRIAL_FLOW_CALLBACKS = ("b:add:", "b:pick:", "b:pp:", "b:own")
+TRIAL_FLOW_COMMANDS = {"/add"}
+TRIAL_FLOW_STATES = {brands_ui.AddFlow.own_name.state, brands_ui.AddFlow.own_price.state}
+
+
+def is_trial_flow(event: TelegramObject, data: dict[str, Any]) -> bool:
+    """Это шаг выбора бренда (каталог → бренд → бюджет)?"""
+    if isinstance(event, CallbackQuery):
+        return bool(event.data and event.data.startswith(TRIAL_FLOW_CALLBACKS))
+    if isinstance(event, Message):
+        # raw_state кладёт в data встроенный FSM aiogram — это шаг «напиши свой бюджет»
+        if data.get("raw_state") in TRIAL_FLOW_STATES:
+            return True
+        return bool(event.text and event.text.split()[0].split("@")[0].lower() in TRIAL_FLOW_COMMANDS)
+    return False
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -48,6 +67,9 @@ class AccessMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
         await self.db.upsert_user(user.id, user.username, user.first_name)
+        # Учёт «кто заходил сегодня» для /report (канал — чат с ботом). Админов не
+        # отсеиваем здесь: их убирает сам отчёт. Ошибки внутри не роняют бота.
+        await self.db.touch_activity(user.id, "bot")
 
         if user.id in config.ADMIN_IDS:
             return await handler(event, data)
@@ -62,11 +84,14 @@ class AccessMiddleware(BaseMiddleware):
             return await handler(event, data)
         if await self.db.has_access(user.id):
             return await handler(event, data)
+        if is_trial_flow(event, data) and await trial_eligible(self.db, user.id):
+            return await handler(event, data)
 
         record = await self.db.get_user(user.id)
         can_trial = bool(config.TRIAL_DAYS and record and not record["trial_used"])
         text = texts.LOCKED.format(trial_days=trial_days_text()) if can_trial else texts.LOCKED_NO_TRIAL
-        markup = kb([btn(f"🎁 {trial_days_text()} бесплатно", "trial")] if can_trial else [],
+        markup = kb([btn(f"🎁 Включить {trial_days_text()} бесплатно", "trial")] if can_trial else [],
+                    [btn("🎯 Сразу выбрать бренд", "b:add:0")] if can_trial else [],
                     [btn("💎 Тарифы", "pl:open")])
         if isinstance(event, Message):
             await event.answer(text, reply_markup=markup)

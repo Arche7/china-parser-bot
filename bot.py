@@ -6,7 +6,7 @@
   2. Подключаемся к базе данных (старая база обновится сама).
   3. Создаём площадки (Goofish работает, 95分 — заготовка).
   4. Обновляем описание бота, меню команд и курс юаня.
-  5. Запускаем монитор в фоне и бота в режиме polling.
+  5. Запускаем монитор и напоминания тест-драйва в фоне и бота в режиме polling.
 """
 
 import asyncio
@@ -143,6 +143,12 @@ async def main() -> None:
             log.warning("Не удалось поставить кнопку приложения: %s", e)
 
     monitor_task = asyncio.create_task(monitor.run_forever())
+    # Ежедневная сводка владельцу за вчера (REPORT_HOUR по Москве, -1 — выключить)
+    from handlers.admin import daily_report_loop
+    report_task = asyncio.create_task(daily_report_loop(bot, db))
+    # Напоминания тест-драйва: через сутки, за 6 ч до конца и в конце (handlers/trial.py)
+    from handlers.trial import trial_nudges_loop
+    trial_task = asyncio.create_task(trial_nudges_loop(bot, db))
 
     me = await bot.get_me()
     log.info("Бот @%s запущен. Админы: %s", me.username, config.ADMIN_IDS or "не заданы")
@@ -151,6 +157,8 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         monitor_task.cancel()
+        report_task.cancel()
+        trial_task.cancel()
         await runner.cleanup()
         for source in sources:
             await source.close()

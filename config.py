@@ -153,6 +153,19 @@ BUYER_FEE_PCT: float = float(os.getenv("BUYER_FEE_PCT", "5"))
 # Курс доллара — только для подсказок о расходах в /stats
 USD_RUB_RATE: float = float(os.getenv("USD_RUB_RATE", "82"))
 
+# --- Отчётность ---
+# В котором часу (по Москве) присылать владельцу (OWNER_ID) сводку за вчера.
+# 0..23, по умолчанию 9 (в 09:00). -1 — не присылать. Отчёт вручную — /report.
+def _report_hour() -> int:
+    try:
+        hour = int(os.getenv("REPORT_HOUR", "9").strip())
+    except ValueError:
+        return 9   # опечатка в переменной не должна ронять бота — берём значение по умолчанию
+    return hour if -1 <= hour <= 23 else 9
+
+
+REPORT_HOUR: int = _report_hour()
+
 # --- База данных ---
 DB_PATH: str = os.getenv("DB_PATH", "").strip() or _default_db_path()
 

@@ -15,8 +15,9 @@ import texts
 from db import Database
 from handlers.common import (
     OLD_HOME, REPLY_KB, back_home, brand_limits_text, btn, count_own, esc, human_date,
-    is_admin, kb, now, plural, safe_answer, show, user_plan, webapp_button,
+    is_admin, kb, now, plural, safe_answer, show, trial_days_text, trial_eligible, user_plan, webapp_button,
 )
+from handlers.trial import left_text
 from monitor import notify_mode, watch_interval
 
 router = Router(name="home")
@@ -36,11 +37,18 @@ async def home_screen(db: Database, user_id: int, first_name: str | None = None)
     favs = len(await db.list_favorites(user_id, limit=500))
     paused = bool(user and user["paused"])
 
+    on_trial = has_access and not is_admin(user_id) and plan.code == "trial"
+    can_trial = not has_access and await trial_eligible(db, user_id)
     lines = [f"<b>{esc(config.BRAND_NAME)}</b>"]
     if is_admin(user_id):
         lines.append("<i>Админ · без ограничений</i>")
+    elif on_trial:
+        # Отсчёт видно каждый раз на главной — чтобы конец теста не стал сюрпризом
+        lines.append(f"🎁 <b>Тест-драйв: осталось {left_text(user['sub_until'] - now())}</b>")
     elif has_access:
         lines.append(f"<i>{esc(plan.title)} · до {human_date(user['sub_until'])}</i>")
+    elif can_trial:
+        lines.append(f"<i>Радар выключен · тест-драйв {trial_days_text()} бесплатно, без карты</i>")
     else:
         lines.append("<i>Доступа нет — радар выключен</i>")
     lines.append("")
@@ -80,8 +88,10 @@ async def home_screen(db: Database, user_id: int, first_name: str | None = None)
         [btn("🔔 Уведомления", "nt:open"), btn("⚙️ Настройки", "st:open")],
         [btn("💎 Тариф", "pl:open"), btn("❓ Помощь", "h:help")],
     ]
-    if not has_access:
-        rows = [[btn("🎁 Попробовать бесплатно", "trial")] if user and not user["trial_used"] and config.TRIAL_DAYS
+    if on_trial:
+        rows = [[btn("💎 Выбрать тариф после теста", "pl:open")]] + rows
+    elif not has_access:
+        rows = [[btn(f"🎁 Включить {trial_days_text()} бесплатно", "trial")] if can_trial
                 else [btn("💎 Выбрать тариф", "pl:open")]] + rows
     return "\n".join(lines), kb(*rows)
 

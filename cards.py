@@ -133,7 +133,7 @@ def card_keyboard(source: str, item_id: str, url: str, is_fav: bool = False) -> 
         [InlineKeyboardButton(text="Открыть на Goofish ↗", url=url)],
         [
             InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
-            InlineKeyboardButton(text="📊 Выгода", callback_data=f"l:pr:{ref}"),
+            InlineKeyboardButton(text="📊 Выгода и Авито" if config.AVITO_ENABLED else "📊 Себестоимость", callback_data=f"l:pr:{ref}"),
         ],
         [
             InlineKeyboardButton(text="★ В избранном" if is_fav else "☆ В избранное", callback_data=f"l:fv:{ref}"),
@@ -348,11 +348,13 @@ def viewer_keyboard(item: dict, ftype: str, fval: str, idx: int, total: int) -> 
         nav,
         [InlineKeyboardButton(text="Открыть на Goofish ↗", url=item["data"]["url"])],
         [InlineKeyboardButton(text="🛡 Легит-чек", callback_data=f"l:lg:{ref}"),
-         InlineKeyboardButton(text="📊 Выгода и Авито" if config.AVITO_ENABLED else "📊 Выгода",
+         InlineKeyboardButton(text="📊 Выгода и Авито" if config.AVITO_ENABLED else "📊 Себестоимость",
                               callback_data=f"l:pr:{ref}")],
         [InlineKeyboardButton(text="★ В избранном" if item["fav"] else "☆ В избранное",
                               callback_data=f"fd:f:{ftype}:{fval}:{idx}"),
          InlineKeyboardButton(text="💬 Продавцу", callback_data=f"as:l:{ref}")],
-        [InlineKeyboardButton(text="🗂 Фильтр", callback_data=f"fd:m:{ftype}:{fval}:0"),
+        # «🙈 Скрыть» — убрать неинтересную вещь из ленты и сразу показать следующую (handlers/feed_ui.py, fd:h:)
+        [InlineKeyboardButton(text="🙈 Скрыть", callback_data=f"fd:h:{ftype}:{fval}:{idx}"),
+         InlineKeyboardButton(text="🗂 Фильтр", callback_data=f"fd:m:{ftype}:{fval}:0"),
          InlineKeyboardButton(text="‹ Главная", callback_data="h:home")],
     ])

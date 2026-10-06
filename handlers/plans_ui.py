@@ -20,9 +20,10 @@ import config
 import plans
 from db import Database
 from handlers.common import (
-    back_home, btn, esc, human_date, is_admin, kb, plural, safe_answer, show, support_url,
+    back_home, btn, esc, human_date, is_admin, kb, now, plural, safe_answer, show, support_url,
     trial_days_text, url_btn, user_plan,
 )
+from handlers.trial import left_text
 
 log = logging.getLogger(__name__)
 router = Router(name="plans")
@@ -58,13 +59,21 @@ async def plans_screen(db: Database, user_id: int):
     user = await db.get_user(user_id)
     current = await user_plan(db, user_id)
     active = await db.has_access(user_id)
+    # Кто на тесте, ещё не пробовал или тест только что кончился — тому подсвечиваем PRO:
+    # один понятный совет вместо выбора из трёх равных вариантов
+    recommend = not is_admin(user_id) and current.code == "trial"
     lines = ["💎 <b>Тарифы</b>", ""]
     if is_admin(user_id):
         lines.append("Ты админ — у тебя всё без ограничений.\n")
+    elif active and current.code == "trial":
+        lines.append(f"🎁 Тест-драйв: осталось <b>{left_text(user['sub_until'] - now())}</b>. "
+                     "Выбери тариф, чтобы радар не выключился — бренды и лента сохранятся.\n")
     elif active:
         lines.append(f"Сейчас: <b>{esc(current.title)}</b> до {human_date(user['sub_until'])}\n")
     for p in plans.PAID_PLANS:
         mark = " ← твой" if active and p.code == current.code else ""
+        if recommend and p.code == plans.PRO.code:
+            mark = " ← ⭐ советую"
         lines.append(f"<b>{p.title}</b> — {plans.stars(p.price_stars)} в месяц{mark} · <i>{esc(p.tagline)}</i>")
     lines.append("")
     lines.append(compare_table())
@@ -81,11 +90,12 @@ async def plans_screen(db: Database, user_id: int):
                  "На Goofish хорошие вещи по хорошей цене уходят за часы.")
     lines.append(f"\n<i>Оплата звёздами Telegram. 1 ⭐ ≈ {config.STAR_RUB_BUY:g} ₽ "
                  "при покупке звёзд — точная цена зависит от способа покупки.</i>")
-    rows = [[btn(p.title, f"pl:p:{p.code}") for p in plans.PAID_PLANS]]
+    rows = [[btn(f"⭐ {p.title}" if recommend and p.code == plans.PRO.code else p.title, f"pl:p:{p.code}")
+             for p in plans.PAID_PLANS]]
     if active and plans.can_buy_own(current) and config.PAYMENTS_ENABLED:
         rows.append([btn(f"➕ Свой бренд — {plans.stars(plans.OWN_ADDON_STARS)}/мес", "pl:own")])
     if user and not user["trial_used"] and not active and config.TRIAL_DAYS:
-        rows.append([btn(f"🎁 Попробовать {trial_days_text()} бесплатно", "trial")])
+        rows.append([btn(f"🎁 Включить {trial_days_text()} бесплатно", "trial")])
     rows.append([btn(f"🤝 Пригласи друга — +{config.REFERRAL_BONUS_DAYS} дней", "pl:ref")])
     rows.append(back_home())
     return "\n".join(lines), kb(*rows)

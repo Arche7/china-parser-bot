@@ -71,6 +71,21 @@ def trial_days_text() -> str:
     return f"{config.TRIAL_DAYS} {plural(config.TRIAL_DAYS, 'день', 'дня', 'дней')}"
 
 
+async def trial_eligible(db: Database, user_id: int) -> bool:
+    """
+    Может ли человек включить тест-драйв (пробный период): тест включён в настройках,
+    человек его ещё не пробовал и доступа сейчас нет. Админам тест не нужен.
+    Лежит здесь (а не в handlers/trial.py), потому что нужен user_plan ниже —
+    так нет круговых импортов.
+    """
+    if not config.TRIAL_DAYS or is_admin(user_id):
+        return False
+    user = await db.get_user(user_id)
+    if not user or user["trial_used"]:
+        return False
+    return not await db.has_access(user_id)
+
+
 def human_date(ts: int) -> str:
     dt = datetime.fromtimestamp(ts)
     return f"{dt.day} {MONTHS[dt.month - 1]}"
@@ -118,6 +133,11 @@ async def user_plan(db: Database, user_id: int) -> plans.Plan:
     """
     if is_admin(user_id):
         return plans.ADMIN
+    # Кто ещё не пробовал тест-драйв, может сразу выбрать первый бренд — тест включится сам.
+    # Пока он не включился, лимиты считаем по пробному тарифу, а не по PRO
+    # (get_plan(None) по старой памяти отдаёт PRO) — иначе можно было бы добавить больше, чем даёт тест.
+    if await trial_eligible(db, user_id):
+        return plans.TRIAL
     plan = plans.get_plan(await db.user_plan_code(user_id))
     extra = await db.own_slots(user_id) if await db.has_access(user_id) else 0
     if extra:
